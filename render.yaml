@@ -1,0 +1,14 @@
+# Render configuration for SmartQuit API
+services:
+  - type: web
+    name: smartquit-api
+    env: python
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: gunicorn -w 4 -k uvicorn.workers.UvicornWorker SmartPauseApp:app
+    plan: free
+    
+envVars:
+  - key: ENVIRONMENT
+    value: production
+  - key: PYTHON_VERSION
+    value: 3.11.7
