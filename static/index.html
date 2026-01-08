@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartQuit API Tester</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+            animation: fadeIn 0.6s ease-in;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+
+        header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .tab-btn {
+            padding: 12px 24px;
+            border: none;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 1em;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+
+        .tab-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .tab-btn.active {
+            background: white;
+            color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+            animation: slideIn 0.3s ease-in;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input[type="text"],
+        input[type="email"],
+        input[type="number"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            font-family: inherit;
+            transition: border-color 0.3s ease;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            resize: vertical;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            min-height: 200px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        button[type="submit"] {
+            flex: 1;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        button[type="submit"]:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button[type="submit"]:active {
+            transform: translateY(0);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+            box-shadow: none;
+        }
+
+        .response-box {
+            background: #f5f5f5;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .response-box.success {
+            border-left-color: #4caf50;
+            background: #f1f8f4;
+        }
+
+        .response-box.error {
+            border-left-color: #f44336;
+            background: #fdf1f0;
+            color: #d32f2f;
+        }
+
+        .response-box.loading {
+            border-left-color: #2196f3;
+            background: #f0f7ff;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .status-200 {
+            background: #c8e6c9;
+            color: #2e7d32;
+        }
+
+        .status-400 {
+            background: #ffcdd2;
+            color: #c62828;
+        }
+
+        .status-404 {
+            background: #ffe0b2;
+            color: #e65100;
+        }
+
+        .sample-btn {
+            background: #f0f0f0;
+            color: #667eea;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-top: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .sample-btn:hover {
+            background: #e0e0e0;
+        }
+
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            color: #1565c0;
+        }
+
+        .two-column {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .two-column {
+                grid-template-columns: 1fr;
+            }
+
+            header h1 {
+                font-size: 1.8em;
+            }
+
+            .tabs {
+                flex-direction: column;
+            }
+
+            .tab-btn {
+                width: 100%;
+            }
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .field-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .field-row-full {
+            grid-column: 1 / -1;
+        }
+
+        @media (max-width: 768px) {
+            .field-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .header-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .api-url {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.9em;
+            word-break: break-all;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🧠 SmartQuit API Tester</h1>
+            <p>Production API Testing Dashboard</p>
+        </header>
+
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('register')">👤 Register User</button>
+            <button class="tab-btn" onclick="switchTab('upload')">📤 Upload Sessions</button>
+            <button class="tab-btn" onclick="switchTab('download')">📥 Download Model</button>
+            <button class="tab-btn" onclick="switchTab('status')">📊 Model Status</button>
+            <button class="tab-btn" onclick="switchTab('analytics')">📈 Analytics</button>
+        </div>
+
+        <!-- Register User Tab -->
+        <div id="register" class="tab-content active">
+            <div class="card">
+                <h2>👤 Register a New User</h2>
+                <p style="color: #666; margin: 10px 0 20px;">Create a new user account and initialize their baseline period</p>
+
+                <form id="registerForm" onsubmit="handleRegister(event)">
+                    <div class="form-group">
+                        <label>User ID</label>
+                        <input type="text" id="regUserId" placeholder="e.g., user_123" required>
+                        <small style="color: #999; margin-top: 5px; display: block;">Unique identifier for the user</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Device Brand (Optional)</label>
+                        <input type="text" id="deviceBrand" placeholder="e.g., Samsung">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Device Model (Optional)</label>
+                        <input type="text" id="deviceModel" placeholder="e.g., Galaxy S21">
+                    </div>
+
+                    <div class="form-group">
+                        <label>OS Version (Optional)</label>
+                        <input type="text" id="osVersion" placeholder="e.g., 13">
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit">Register User</button>
+                        <button type="button" class="btn-secondary" onclick="document.getElementById('registerForm').reset()">Clear</button>
+                    </div>
+                </form>
+
+                <div id="registerResponse" class="response-box"></div>
+            </div>
+        </div>
+
+        <!-- Upload Sessions Tab -->
+        <div id="upload" class="tab-content">
+            <div class="card">
+                <h2>📤 Upload Daily Sessions</h2>
+                <p style="color: #666; margin: 10px 0 20px;">Upload session data from a specific date</p>
+
+                <form id="uploadForm" onsubmit="handleUpload(event)">
+                    <div class="field-row">
+                        <div class="form-group">
+                            <label>User ID</label>
+                            <input type="text" id="uploadUserId" placeholder="e.g., user_123" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Date (YYYY-MM-DD)</label>
+                            <input type="text" id="uploadDate" placeholder="2024-01-09" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group field-row-full">
+                        <label>Sessions (JSON Format)</label>
+                        <button type="button" class="sample-btn" onclick="loadSampleSessions()">Load Sample Data</button>
+                        <textarea id="sessionsJson" required placeholder="Paste JSON or click 'Load Sample Data'"></textarea>
+                    </div>
+
+                    <div class="info-box">
+                        📝 Expected JSON format: Array of sessions with app_name, start_time, end_time, duration_seconds, vibration_occurred, user_complied
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit">Upload Sessions</button>
+                        <button type="button" class="btn-secondary" onclick="document.getElementById('uploadForm').reset()">Clear</button>
+                    </div>
+                </form>
+
+                <div id="uploadResponse" class="response-box"></div>
+            </div>
+        </div>
+
+        <!-- Download Model Tab -->
+        <div id="download" class="tab-content">
+            <div class="card">
+                <h2>📥 Download Trained Model</h2>
+                <p style="color: #666; margin: 10px 0 20px;">Get the latest trained Q-Learning model</p>
+
+                <form id="downloadForm" onsubmit="handleDownload(event)">
+                    <div class="field-row">
+                        <div class="form-group">
+                            <label>User ID</label>
+                            <input type="text" id="downloadUserId" placeholder="e.g., user_123" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Format</label>
+                            <select id="modelFormat">
+                                <option value="json">JSON (Readable)</option>
+                                <option value="binary">Binary (Optimized)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="info-box">
+                        ℹ️ Model is only available after completing the 7-day baseline period
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit">Download Model</button>
+                    </div>
+                </form>
+
+                <div id="downloadResponse" class="response-box"></div>
+            </div>
+        </div>
+
+        <!-- Model Status Tab -->
+        <div id="status" class="tab-content">
+            <div class="card">
+                <h2>📊 Check Model Status</h2>
+                <p style="color: #666; margin: 10px 0 20px;">Check if a user's model is ready and view training progress</p>
+
+                <form id="statusForm" onsubmit="handleStatus(event)">
+                    <div class="form-group">
+                        <label>User ID</label>
+                        <input type="text" id="statusUserId" placeholder="e.g., user_123" required>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit">Get Status</button>
+                    </div>
+                </form>
+
+                <div id="statusResponse" class="response-box"></div>
+            </div>
+        </div>
+
+        <!-- Analytics Tab -->
+        <div id="analytics" class="tab-content">
+            <div class="card">
+                <h2>📈 View User Analytics</h2>
+                <p style="color: #666; margin: 10px 0 20px;">Get comprehensive usage and compliance analytics</p>
+
+                <form id="analyticsForm" onsubmit="handleAnalytics(event)">
+                    <div class="form-group">
+                        <label>User ID</label>
+                        <input type="text" id="analyticsUserId" placeholder="e.g., user_123" required>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit">Get Analytics</button>
+                    </div>
+                </form>
+
+                <div id="analyticsResponse" class="response-box"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+
+            // Remove active class from all buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+
+        function loadSampleSessions() {
+            const sample = [
+                {
+                    "app_name": "com.instagram.android",
+                    "start_time": "2024-01-09T09:00:00",
+                    "end_time": "2024-01-09T09:15:00",
+                    "duration_seconds": 900,
+                    "vibration_occurred": true,
+                    "user_complied": true
+                },
+                {
+                    "app_name": "com.google.android.youtube",
+                    "start_time": "2024-01-09T10:00:00",
+                    "end_time": "2024-01-09T10:20:00",
+                    "duration_seconds": 1200,
+                    "vibration_occurred": true,
+                    "user_complied": false
+                },
+                {
+                    "app_name": "com.facebook.katana",
+                    "start_time": "2024-01-09T14:30:00",
+                    "end_time": "2024-01-09T14:45:00",
+                    "duration_seconds": 900,
+                    "vibration_occurred": false,
+                    "user_complied": false
+                },
+                {
+                    "app_name": "com.chrome.android",
+                    "start_time": "2024-01-09T15:00:00",
+                    "end_time": "2024-01-09T15:10:00",
+                    "duration_seconds": 600,
+                    "vibration_occurred": false,
+                    "user_complied": false
+                }
+            ];
+            document.getElementById('sessionsJson').value = JSON.stringify(sample, null, 2);
+        }
+
+        function showResponse(elementId, data, status) {
+            const element = document.getElementById(elementId);
+            let jsonStr;
+
+            if (typeof data === 'string') {
+                jsonStr = data;
+            } else {
+                jsonStr = JSON.stringify(data, null, 2);
+            }
+
+            element.textContent = jsonStr;
+            element.style.display = 'block';
+
+            if (status >= 200 && status < 300) {
+                element.classList.remove('error', 'loading');
+                element.classList.add('success');
+            } else {
+                element.classList.remove('success', 'loading');
+                element.classList.add('error');
+            }
+
+            element.innerHTML = `<span class="status-badge status-${status}">${status}</span>\n\n` + element.innerHTML;
+        }
+
+        async function handleRegister(event) {
+            event.preventDefault();
+
+            const userId = document.getElementById('regUserId').value;
+            const brand = document.getElementById('deviceBrand').value;
+            const model = document.getElementById('deviceModel').value;
+            const osVer = document.getElementById('osVersion').value;
+
+            const payload = {
+                user_id: userId,
+                device_info: {
+                    brand: brand || undefined,
+                    model: model || undefined,
+                    os_version: osVer || undefined
+                }
+            };
+
+            // Remove undefined values
+            Object.keys(payload.device_info).forEach(key => {
+                if (payload.device_info[key] === undefined) {
+                    delete payload.device_info[key];
+                }
+            });
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/users/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                showResponse('registerResponse', data, response.status);
+            } catch (error) {
+                showResponse('registerResponse', `Error: ${error.message}`, 500);
+            }
+        }
+
+        async function handleUpload(event) {
+            event.preventDefault();
+
+            const userId = document.getElementById('uploadUserId').value;
+            const date = document.getElementById('uploadDate').value;
+            const sessionsStr = document.getElementById('sessionsJson').value;
+
+            try {
+                const sessions = JSON.parse(sessionsStr);
+
+                const payload = {
+                    user_id: userId,
+                    date: date,
+                    sessions: sessions
+                };
+
+                const response = await fetch(`${API_BASE}/api/v1/sessions/upload`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                showResponse('uploadResponse', data, response.status);
+            } catch (error) {
+                showResponse('uploadResponse', `Error: ${error.message}`, 500);
+            }
+        }
+
+        async function handleDownload(event) {
+            event.preventDefault();
+
+            const userId = document.getElementById('downloadUserId').value;
+            const format = document.getElementById('modelFormat').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/model/download/${userId}?format=${format}`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                const data = await response.json();
+                showResponse('downloadResponse', data, response.status);
+            } catch (error) {
+                showResponse('downloadResponse', `Error: ${error.message}`, 500);
+            }
+        }
+
+        async function handleStatus(event) {
+            event.preventDefault();
+
+            const userId = document.getElementById('statusUserId').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/model/status/${userId}`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                const data = await response.json();
+                showResponse('statusResponse', data, response.status);
+            } catch (error) {
+                showResponse('statusResponse', `Error: ${error.message}`, 500);
+            }
+        }
+
+        async function handleAnalytics(event) {
+            event.preventDefault();
+
+            const userId = document.getElementById('analyticsUserId').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/analytics/${userId}`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                const data = await response.json();
+                showResponse('analyticsResponse', data, response.status);
+            } catch (error) {
+                showResponse('analyticsResponse', `Error: ${error.message}`, 500);
+            }
+        }
+
+        // Set today's date in the upload form
+        window.addEventListener('load', () => {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('uploadDate').value = today;
+        });
+    </script>
+</body>
+</html>

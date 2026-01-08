@@ -7,6 +7,7 @@ Daily model updates at 3 AM per user
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime, timedelta
@@ -854,12 +855,16 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
 
 @app.get("/")
 async def root():
+    """Serve the API tester UI"""
+    ui_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    if os.path.exists(ui_path):
+        return FileResponse(ui_path)
     return {
         "service": "SmartQuit Edge ML API",
         "version": "2.0.0 - Database Enabled",
         "status": "running",
         "docs": "/docs",
-        "tester": "/static/api_tester.html",
+        "ui": "/static/index.html",
         "database": "Neon PostgreSQL",
         "update_schedule": "Daily at 3 AM per user",
         "persistence": "All data points stored in PostgreSQL"
