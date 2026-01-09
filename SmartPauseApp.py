@@ -62,7 +62,6 @@ class Session(BaseModel):
     start_time: str  # ISO format
     end_time: str
     duration_seconds: float
-    date: str
     vibration_occurred: bool = False  # Did the device vibrate during this session?
     user_complied: bool = False  # Did user stop using app after vibration?
 
