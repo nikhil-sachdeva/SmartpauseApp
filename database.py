@@ -88,7 +88,7 @@ class Session(Base):
     date = Column(String, index=True)  # YYYY-MM-DD
     
     # Real device data
-    vibration_occurred = Column(Boolean, default=False)
+    num_vibrations = Column(Integer, default=0)  # Number of vibrations in this session
     user_complied = Column(Boolean, default=False)
     
     # Processed data

@@ -53,7 +53,7 @@ class DatabaseService:
                 end_time=datetime.fromisoformat(session.end_time),
                 duration_seconds=session.duration_seconds,
                 date=date,
-                vibration_occurred=session.vibration_occurred,
+                num_vibrations=session.num_vibrations,
                 user_complied=session.user_complied,
                 is_target_app=session.app_name in get_social_media_apps()
             )

@@ -62,7 +62,7 @@ class Session(BaseModel):
     start_time: str  # ISO format
     end_time: str
     duration_seconds: float
-    vibration_occurred: bool = False  # Did the device vibrate during this session?
+    num_vibrations: int = 0  # Number of vibrations in this session
     user_complied: bool = False  # Did user stop using app after vibration?
 
 class DailyUpload(BaseModel):
@@ -394,11 +394,11 @@ def create_grouped_session_from_actual_data(sessions: List[Dict], group_id: int)
     """Create grouped session with ACTUAL vibration and compliance data"""
     
     # Count actual vibrations and compliances
-    total_vibrations = sum(1 for s in sessions if s.get('vibration_occurred', False))
+    total_vibrations = sum(s.get('num_vibrations', 0) for s in sessions)
     complied_vibrations = sum(1 for s in sessions if s.get('user_complied', False))
     
     # Determine group action (1 if ANY vibration occurred in group)
-    group_action = 1 if any(s.get('vibration_occurred', False) for s in sessions) else 0
+    group_action = 1 if any(s.get('num_vibrations', 0) > 0 for s in sessions) else 0
     
     return {
         'group_id': group_id,
@@ -700,8 +700,9 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
     total_time = sum(s.duration_seconds for s in sessions)
     target_time = sum(s.duration_seconds for s in sessions if s.is_target_app)
     
-    # Calculate compliance rate
-    vibration_sessions = [s for s in sessions if s.vibration_occurred]
+    # Calculate compliance rate and vibrations
+    vibration_sessions = [s for s in sessions if s.num_vibrations > 0]
+    total_vibrations_count = sum(s.num_vibrations for s in sessions)
     compliance_rate = 0
     if vibration_sessions:
         complied = sum(1 for s in vibration_sessions if s.user_complied)
@@ -714,7 +715,7 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
         "total_time_hours": total_time / 3600,
         "social_media_time_hours": target_time / 3600,
         "compliance_rate": compliance_rate,
-        "total_vibrations": len(vibration_sessions),
+        "total_vibrations": total_vibrations_count,
         "complied_vibrations": sum(1 for s in vibration_sessions if s.user_complied),
         "baseline_stats": {
             "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
@@ -788,9 +789,9 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
             'end_time': s.end_time,
             'duration': timedelta(seconds=s.duration_seconds),
             'date': s.date,
-            'vibration_occurred': s.vibration_occurred,
+            'num_vibrations': s.num_vibrations,
             'user_complied': s.user_complied,
-            'action': 1 if s.vibration_occurred else 0,
+            'action': 1 if s.num_vibrations > 0 else 0,
             'complied': 1 if s.user_complied else 0,
         })
     
