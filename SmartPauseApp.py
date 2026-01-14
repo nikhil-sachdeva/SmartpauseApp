@@ -73,6 +73,7 @@ class DailyUpload(BaseModel):
 class UserRegistration(BaseModel):
     user_id: str
     device_info: Optional[Dict] = None
+    apps_to_monitor: Optional[List[str]] = None  # Apps user wants to monitor (empty list = all apps)
 
 class ModelDownload(BaseModel):
     user_id: str
@@ -526,14 +527,31 @@ def process_sessions_into_groups(sessions: List[Session], gap_seconds: int = 120
 @app.post("/api/v1/users/register")
 async def register_user(registration: UserRegistration, db: SQLSession = Depends(get_db)):
     """Register a new user and initialize their model"""
+    print(f"\n📱 REGISTRATION REQUEST RECEIVED:")
+    print(f"  User ID: {registration.user_id}")
+    print(f"  Device Info: {registration.device_info}")
+    print(f"  Apps to Monitor (raw): {registration.apps_to_monitor}")
+    print(f"  Apps to Monitor Type: {type(registration.apps_to_monitor)}")
+    print(f"  Apps is None: {registration.apps_to_monitor is None}")
+    print(f"  Apps is empty: {registration.apps_to_monitor == [] if registration.apps_to_monitor is not None else 'N/A'}")
+    
     if DatabaseService.user_exists(db, registration.user_id):
         raise HTTPException(status_code=400, detail="User already exists")
     
-    DatabaseService.create_user(db, registration.user_id, registration.device_info)
+    # If no apps specified, use all social media apps by default
+    apps_to_monitor = registration.apps_to_monitor if registration.apps_to_monitor else SOCIAL_MEDIA_APPS
+    
+    print(f"  Final apps_to_monitor to save: {apps_to_monitor}")
+    
+    user = DatabaseService.create_user(db, registration.user_id, registration.device_info, apps_to_monitor)
+    
+    print(f"  ✅ User created successfully")
+    print(f"  Saved apps_to_monitor: {user.apps_to_monitor}\n")
     
     return {
         "status": "success",
         "user_id": registration.user_id,
+        "apps_to_monitor": apps_to_monitor,
         "message": "User registered. Please complete baseline week (days 0-6) before intervention."
     }
 

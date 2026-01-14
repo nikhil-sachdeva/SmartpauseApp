@@ -64,6 +64,7 @@ class User(Base):
     id = Column(String, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     device_info = Column(JSON, nullable=True)
+    apps_to_monitor = Column(JSON, nullable=True)  # List of apps user wants to monitor
     current_day = Column(Integer, default=0)
     baseline_completed = Column(Boolean, default=False)
     start_date = Column(DateTime, nullable=True)
