@@ -572,48 +572,62 @@ async def upload_daily_sessions(
     if not DatabaseService.user_exists(db, batch.user_id):
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Automatically calculate day number from date
-    day_number = DatabaseService.calculate_day_number(db, batch.user_id, batch.date)
+    try:
+        # Validate date format
+        print(f"📥 Upload received: User={batch.user_id}, Date={batch.date}, Sessions={len(batch.sessions)}")
+        print(f"   Date format: {batch.date}")
+        if len(batch.sessions) > 0:
+            print(f"   Sample session start_time: {batch.sessions[0].start_time}")
+        
+        # Automatically calculate day number from date
+        day_number = DatabaseService.calculate_day_number(db, batch.user_id, batch.date)
+        
+        print(f"✅ Calculated day number: {day_number} for date {batch.date}")
+        
+        # Save sessions to database
+        DatabaseService.save_sessions(db, batch.user_id, batch.date, batch.sessions)
+        
+        response = {
+            "status": "received",
+            "sessions_count": len(batch.sessions),
+            "day_number": day_number,
+            "date": batch.date
+        }
+        
+        # If we've completed baseline week (day 6), calculate stats
+        if day_number == 6:
+            baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
+            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions")
+            stats = calculate_baseline_stats(baseline_sessions)
+            DatabaseService.save_baseline_stats(db, batch.user_id, stats)
+            response["baseline_stats"] = stats
+            response["message"] = "Baseline week completed. Model training starts from day 7."
+            print(f"Baseline stats: {stats}")
+        
+        # If intervention days (7-34), train model in background
+        elif day_number >= 7:
+            print(f"Scheduling training for user {batch.user_id}, day {day_number}")
+            background_tasks.add_task(
+                train_model_daily,
+                batch.user_id,
+                batch.date,
+                db
+            )
+            response["message"] = f"Training model with day {day_number} data. Updated model ready for download."
+        else:
+            response["message"] = f"Baseline day {day_number} recorded. Continue uploading daily until day 6."
+        
+        # Update user's current day
+        DatabaseService.update_user_day(db, batch.user_id, day_number)
+        
+        return response
     
-    print(f"Received upload from user {batch.user_id}: Day {day_number}, Date {batch.date}, Sessions: {len(batch.sessions)}")
-    
-    # Save sessions to database
-    DatabaseService.save_sessions(db, batch.user_id, batch.date, batch.sessions)
-    
-    response = {
-        "status": "received",
-        "sessions_count": len(batch.sessions),
-        "day_number": day_number,
-        "date": batch.date
-    }
-    
-    # If we've completed baseline week (day 6), calculate stats
-    if day_number == 6:
-        baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
-        print(f"Calculating baseline stats from {len(baseline_sessions)} sessions")
-        stats = calculate_baseline_stats(baseline_sessions)
-        DatabaseService.save_baseline_stats(db, batch.user_id, stats)
-        response["baseline_stats"] = stats
-        response["message"] = "Baseline week completed. Model training starts from day 7."
-        print(f"Baseline stats: {stats}")
-    
-    # If intervention days (7-34), train model in background
-    elif day_number >= 7:
-        print(f"Scheduling training for user {batch.user_id}, day {day_number}")
-        background_tasks.add_task(
-            train_model_daily,
-            batch.user_id,
-            batch.date,
-            db
-        )
-        response["message"] = f"Training model with day {day_number} data. Updated model ready for download."
-    else:
-        response["message"] = f"Baseline day {day_number} recorded. Continue uploading daily until day 6."
-    
-    # Update user's current day
-    DatabaseService.update_user_day(db, batch.user_id, day_number)
-    
-    return response
+    except ValueError as e:
+        print(f"❌ Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"❌ Unexpected error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Server error: {type(e).__name__}: {str(e)}")
 
 @app.get("/api/v1/model/download/{user_id}")
 async def download_model(user_id: str, format: str = "binary", db: SQLSession = Depends(get_db)):

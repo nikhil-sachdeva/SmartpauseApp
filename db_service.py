@@ -39,6 +39,13 @@ class DatabaseService:
     @staticmethod
     def save_sessions(db: Session, user_id: str, date: str, sessions: list):
         """Save daily sessions to database"""
+        # Validate date format
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as e:
+            print(f"❌ Invalid date format: {date}. Expected YYYY-MM-DD. Error: {e}")
+            raise ValueError(f"Invalid date format: {date}. Expected format YYYY-MM-DD (e.g., 2025-01-15)")
+        
         # Delete existing sessions for this date (in case of re-upload)
         db.query(SessionModel).filter(
             and_(SessionModel.user_id == user_id, SessionModel.date == date)
@@ -46,12 +53,19 @@ class DatabaseService:
         db.commit()
         
         # Insert new sessions
-        for session in sessions:
+        for i, session in enumerate(sessions):
+            try:
+                start_dt = datetime.fromisoformat(session.start_time)
+                end_dt = datetime.fromisoformat(session.end_time)
+            except ValueError as e:
+                print(f"❌ Invalid datetime format in session {i}: start_time={session.start_time}, end_time={session.end_time}. Error: {e}")
+                raise ValueError(f"Session {i}: Invalid datetime format. Expected ISO format (e.g., 2025-01-15T14:30:00+05:30). Error: {e}")
+            
             db_session = SessionModel(
                 user_id=user_id,
                 app_name=session.app_name,
-                start_time=datetime.fromisoformat(session.start_time),
-                end_time=datetime.fromisoformat(session.end_time),
+                start_time=start_dt,
+                end_time=end_dt,
                 duration_seconds=session.duration_seconds,
                 date=date,
                 num_vibrations=session.num_vibrations,
@@ -61,6 +75,7 @@ class DatabaseService:
             db.add(db_session)
         
         db.commit()
+        print(f"✅ Saved {len(sessions)} sessions for user {user_id} on date {date}")
     
     @staticmethod
     def get_sessions_by_date(db: Session, user_id: str, date: str) -> list:
@@ -218,21 +233,23 @@ class DatabaseService:
         """Calculate day number from date"""
         user = db.query(User).filter(User.id == user_id).first()
         
-        if not user.start_date:
-            # First upload - set start date
-            user.start_date = datetime.strptime(date_str, "%Y-%m-%d")
-            db.commit()
-            return 0
-        
-        # Parse date with multiple formats
+        # Validate and parse date with multiple formats
+        current_date = None
         for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]:
             try:
                 current_date = datetime.strptime(date_str, fmt)
                 break
             except ValueError:
                 continue
-        else:
-            raise ValueError(f"Unable to parse date: {date_str}")
+        
+        if current_date is None:
+            raise ValueError(f"Unable to parse date: {date_str}. Expected format: YYYY-MM-DD")
+        
+        if not user.start_date:
+            # First upload - set start date
+            user.start_date = current_date
+            db.commit()
+            return 0
         
         day_number = (current_date.date() - user.start_date.date()).days
         return day_number

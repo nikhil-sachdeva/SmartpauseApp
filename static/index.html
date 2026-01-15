@@ -366,6 +366,16 @@
                         <input type="text" id="osVersion" placeholder="e.g., 13">
                     </div>
 
+                    <div class="form-group">
+                        <label>Apps to Monitor (Optional)</label>
+                        <p style="color: #999; font-size: 0.9em; margin-bottom: 10px;">Leave empty to monitor all social media apps by default</p>
+                        <div id="appsCheckboxContainer" style="border: 1px solid #ddd; border-radius: 6px; padding: 15px; max-height: 300px; overflow-y: auto; background-color: #f9f9f9;">
+                            <p style="color: #999; text-align: center;">Enter app names separated by commas, or paste JSON array</p>
+                            <textarea id="appsToMonitor" placeholder='Enter app names: "Instagram, TikTok, Facebook"&#10;OR paste JSON: ["Instagram", "TikTok", "Facebook"]' style="width: 100%; min-height: 100px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 0.9em;"></textarea>
+                        </div>
+                        <small style="color: #999; margin-top: 5px; display: block;">Apps can be a comma-separated list or JSON array format</small>
+                    </div>
+
                     <div class="button-group">
                         <button type="submit">Register User</button>
                         <button type="button" class="btn-secondary" onclick="document.getElementById('registerForm').reset()">Clear</button>
@@ -583,6 +593,24 @@
             const brand = document.getElementById('deviceBrand').value;
             const model = document.getElementById('deviceModel').value;
             const osVer = document.getElementById('osVersion').value;
+            const appsInput = document.getElementById('appsToMonitor').value.trim();
+
+            // Parse apps_to_monitor
+            let appsToMonitor = null;
+            if (appsInput) {
+                try {
+                    // Try to parse as JSON array first
+                    if (appsInput.startsWith('[')) {
+                        appsToMonitor = JSON.parse(appsInput);
+                    } else {
+                        // Parse as comma-separated list
+                        appsToMonitor = appsInput.split(',').map(app => app.trim()).filter(app => app.length > 0);
+                    }
+                } catch (e) {
+                    showResponse('registerResponse', `Error parsing apps: ${e.message}`, 400);
+                    return;
+                }
+            }
 
             const payload = {
                 user_id: userId,
@@ -599,6 +627,13 @@
                     delete payload.device_info[key];
                 }
             });
+
+            // Add apps_to_monitor if provided
+            if (appsToMonitor && appsToMonitor.length > 0) {
+                payload.apps_to_monitor = appsToMonitor;
+            }
+
+            console.log('Registration Payload:', JSON.stringify(payload, null, 2));
 
             try {
                 const response = await fetch(`${API_BASE}/api/v1/users/register`, {
