@@ -54,12 +54,41 @@ class DatabaseService:
         
         # Insert new sessions
         for i, session in enumerate(sessions):
+            start_time_str = getattr(session, 'start_time', None)
+            end_time_str = getattr(session, 'end_time', None)
+            
+            if not start_time_str or not end_time_str:
+                raise ValueError(f"Session {i}: Missing start_time or end_time")
+            
             try:
-                start_dt = datetime.fromisoformat(session.start_time)
-                end_dt = datetime.fromisoformat(session.end_time)
+                # Debug logging
+                print(f"   [Session {i}] Parsing start_time: '{start_time_str}' (type: {type(start_time_str).__name__}, len: {len(str(start_time_str))})")
+                print(f"   [Session {i}] Parsing end_time: '{end_time_str}' (type: {type(end_time_str).__name__}, len: {len(str(end_time_str))})")
+                
+                # Try parsing with timezone first, then without
+                try:
+                    start_dt = datetime.fromisoformat(start_time_str)
+                except ValueError as e1:
+                    # Fallback: try parsing as naive datetime if fromisoformat fails
+                    try:
+                        start_dt = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%M:%S")
+                    except ValueError as e2:
+                        raise ValueError(f"Could not parse start_time with fromisoformat or strptime. Tried formats: ISO (e.g., 2025-01-15T14:30:00+05:30) and YYYY-MM-DDTHH:MM:SS. Error1: {e1}. Error2: {e2}")
+                
+                try:
+                    end_dt = datetime.fromisoformat(end_time_str)
+                except ValueError as e1:
+                    # Fallback: try parsing as naive datetime if fromisoformat fails
+                    try:
+                        end_dt = datetime.strptime(end_time_str, "%Y-%m-%dT%H:%M:%S")
+                    except ValueError as e2:
+                        raise ValueError(f"Could not parse end_time with fromisoformat or strptime. Tried formats: ISO (e.g., 2025-01-15T14:30:00+05:30) and YYYY-MM-DDTHH:MM:SS. Error1: {e1}. Error2: {e2}")
+                
+                print(f"   [Session {i}] ✅ Parsed successfully: {start_dt} to {end_dt}")
+                    
             except ValueError as e:
-                print(f"❌ Invalid datetime format in session {i}: start_time={session.start_time}, end_time={session.end_time}. Error: {e}")
-                raise ValueError(f"Session {i}: Invalid datetime format. Expected ISO format (e.g., 2025-01-15T14:30:00+05:30). Error: {e}")
+                print(f"❌ Invalid datetime format in session {i}: start_time={start_time_str}, end_time={end_time_str}. Error: {e}")
+                raise ValueError(f"Session {i}: Invalid datetime format. Error: {e}")
             
             db_session = SessionModel(
                 user_id=user_id,

@@ -63,6 +63,7 @@ class User(Base):
     
     id = Column(String, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     device_info = Column(JSON, nullable=True)
     apps_to_monitor = Column(JSON, nullable=True)  # List of apps user wants to monitor
     current_day = Column(Integer, default=0)
@@ -74,6 +75,7 @@ class User(Base):
     baseline_stats = relationship("BaselineStats", back_populates="user", uselist=False, cascade="all, delete-orphan")
     model_checkpoints = relationship("ModelCheckpoint", back_populates="user", cascade="all, delete-orphan")
     training_logs = relationship("TrainingLog", back_populates="user", cascade="all, delete-orphan")
+    api_logs = relationship("APILog", back_populates="user", cascade="all, delete-orphan")
 
 
 class Session(Base):
@@ -87,6 +89,8 @@ class Session(Base):
     end_time = Column(DateTime)
     duration_seconds = Column(Float)
     date = Column(String, index=True)  # YYYY-MM-DD
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Real device data
     num_vibrations = Column(Integer, default=0)  # Number of vibrations in this session
@@ -109,6 +113,8 @@ class GroupedSession(Base):
     user_id = Column(String, ForeignKey("users.id"), index=True)
     group_id = Column(Integer)
     date = Column(String, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Session details
     session_count = Column(Integer)
@@ -135,6 +141,8 @@ class BaselineStats(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, ForeignKey("users.id"), unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     median_target_usage_minutes = Column(Float)
     short_session_threshold_seconds = Column(Float)
@@ -187,6 +195,7 @@ class TrainingLog(Base):
     discount_factor_gamma = Column(Float)
     
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     user = relationship("User", back_populates="training_logs")
@@ -205,6 +214,32 @@ class FeedbackLog(Base):
     reward = Column(Float)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class APILog(Base):
+    """API call logs for tracking and debugging"""
+    __tablename__ = "api_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), index=True)
+    
+    # API request details
+    endpoint = Column(String, index=True)
+    method = Column(String)  # GET, POST, etc.
+    status_code = Column(Integer, index=True)
+    
+    # Request/Response info
+    request_body = Column(JSON, nullable=True)
+    response_body = Column(JSON, nullable=True)
+    error_message = Column(String, nullable=True)
+    
+    # Timing
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="api_logs")
 
 
 # ============================================================================

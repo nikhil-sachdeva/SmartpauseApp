@@ -22,6 +22,9 @@ import os
 from database import get_db, init_db
 from db_service import DatabaseService
 from sqlalchemy.orm import Session as SQLSession
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+import io
 
 app = FastAPI(title="SmartQuit API", version="2.0.0 - Database Enabled")
 
@@ -33,6 +36,70 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ============================================================================
+# API LOGGING MIDDLEWARE
+# ============================================================================
+
+class APILoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware to log all API calls with status and timing"""
+    
+    async def dispatch(self, request: Request, call_next):
+        from database import SessionLocal
+        from database import APILog
+        
+        # Get user_id from request (if available)
+        user_id = None
+        
+        # Try to get user_id from path parameters
+        if "user_id" in request.path_params:
+            user_id = request.path_params["user_id"]
+        
+        # Try to get user_id from request body (for POST requests)
+        if not user_id and request.method in ["POST", "PUT"]:
+            try:
+                body = await request.body()
+                if body:
+                    body_data = json.loads(body)
+                    user_id = body_data.get("user_id")
+                # Reset the body stream for the actual handler
+                request._body = body
+            except:
+                pass
+        
+        # Call the next middleware/handler
+        start_time = datetime.now()
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            error_message = None
+        except Exception as e:
+            status_code = 500
+            error_message = str(e)
+            raise
+        finally:
+            # Log the API call
+            if user_id:
+                try:
+                    db = SessionLocal()
+                    api_log = APILog(
+                        user_id=user_id,
+                        endpoint=request.url.path,
+                        method=request.method,
+                        status_code=status_code,
+                        error_message=error_message,
+                        created_at=start_time
+                    )
+                    db.add(api_log)
+                    db.commit()
+                    db.close()
+                except Exception as e:
+                    print(f"Failed to log API call: {e}")
+        
+        return response
+
+# Add the logging middleware
+app.add_middleware(APILoggingMiddleware)
 
 # Mount static files (API tester HTML)
 static_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
@@ -577,7 +644,8 @@ async def upload_daily_sessions(
         print(f"📥 Upload received: User={batch.user_id}, Date={batch.date}, Sessions={len(batch.sessions)}")
         print(f"   Date format: {batch.date}")
         if len(batch.sessions) > 0:
-            print(f"   Sample session start_time: {batch.sessions[0].start_time}")
+            print(f"   Sample session start_time: {batch.sessions[0].start_time} (type: {type(batch.sessions[0].start_time).__name__}, length: {len(str(batch.sessions[0].start_time))})")
+            print(f"   Sample session end_time: {batch.sessions[0].end_time} (length: {len(str(batch.sessions[0].end_time))})")
         
         # Automatically calculate day number from date
         day_number = DatabaseService.calculate_day_number(db, batch.user_id, batch.date)
@@ -716,6 +784,47 @@ async def upload_feedback(
         "status": "learned",
         "training_steps": agent.training_steps,
         "epsilon": agent.epsilon
+    }
+
+@app.get("/api/v1/logs/{user_id}")
+async def get_api_logs(user_id: str, limit: int = 100, offset: int = 0, db: SQLSession = Depends(get_db)):
+    """
+    Get API call logs for a user
+    Shows all API requests made by the user with their status and timestamp
+    """
+    from database import APILog
+    
+    if not DatabaseService.user_exists(db, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Query API logs for this user, sorted by most recent first
+    logs = db.query(APILog)\
+        .filter(APILog.user_id == user_id)\
+        .order_by(APILog.created_at.desc())\
+        .offset(offset)\
+        .limit(limit)\
+        .all()
+    
+    # Format logs for response
+    log_list = []
+    for log in logs:
+        log_list.append({
+            "id": log.id,
+            "endpoint": log.endpoint,
+            "method": log.method,
+            "status_code": log.status_code,
+            "error_message": log.error_message,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "updated_at": log.updated_at.isoformat() if log.updated_at else None
+        })
+    
+    return {
+        "user_id": user_id,
+        "total_logs": db.query(APILog).filter(APILog.user_id == user_id).count(),
+        "returned": len(log_list),
+        "offset": offset,
+        "limit": limit,
+        "logs": log_list
     }
 
 @app.get("/api/v1/analytics/{user_id}")
