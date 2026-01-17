@@ -90,8 +90,8 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
             error_message = str(e)
             raise
         finally:
-            # Log the API call to database
-            if user_id:
+            # Log the API call to database (but skip logging the logs endpoint itself)
+            if user_id and not request.url.path.startswith("/api/v1/logs"):
                 try:
                     db = SessionLocal()
                     api_log = APILog(
