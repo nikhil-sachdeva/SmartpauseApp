@@ -51,34 +51,46 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
         # Get user_id from request (if available)
         user_id = None
         
-        # Try to get user_id from path parameters
-        if "user_id" in request.path_params:
-            user_id = request.path_params["user_id"]
+        # Try to extract user_id from URL path first
+        # For paths like /api/v1/model/download/{user_id}
+        path_parts = request.url.path.split('/')
+        for part in path_parts:
+            # Check if this looks like a user_id (not empty and not a number)
+            if part and not part.isdigit() and part not in ['api', 'v1', 'users', 'register', 'sessions', 'upload', 'model', 'download', 'status', 'logs', 'feedback', 'analytics']:
+                user_id = part
+                break
         
-        # Try to get user_id from request body (for POST requests)
+        # If not found in path, try to get from request body (for POST requests)
         if not user_id and request.method in ["POST", "PUT"]:
             try:
                 body = await request.body()
                 if body:
-                    body_data = json.loads(body)
-                    user_id = body_data.get("user_id")
-                # Reset the body stream for the actual handler
-                request._body = body
+                    try:
+                        body_data = json.loads(body)
+                        user_id = body_data.get("user_id")
+                    except:
+                        pass
+                    # Reset the body so it can be read again
+                    async def receive():
+                        return {"type": "http.request", "body": body}
+                    request._receive = receive
             except:
                 pass
         
         # Call the next middleware/handler
         start_time = datetime.now()
+        response = None
+        status_code = 500
+        error_message = None
+        
         try:
             response = await call_next(request)
             status_code = response.status_code
-            error_message = None
         except Exception as e:
-            status_code = 500
             error_message = str(e)
             raise
         finally:
-            # Log the API call
+            # Log the API call to database
             if user_id:
                 try:
                     db = SessionLocal()
@@ -93,8 +105,9 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
                     db.add(api_log)
                     db.commit()
                     db.close()
+                    print(f"✅ Logged API call: {request.method} {request.url.path} - Status: {status_code} - User: {user_id}")
                 except Exception as e:
-                    print(f"Failed to log API call: {e}")
+                    print(f"⚠️  Failed to log API call: {e}")
         
         return response
 
