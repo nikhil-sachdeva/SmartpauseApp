@@ -144,6 +144,7 @@ class Session(BaseModel):
     duration_seconds: float
     num_vibrations: int = 0  # Number of vibrations in this session
     user_complied: bool = False  # Did user stop using app after vibration?
+    group_id: int = 1  # Group ID for session grouping (defaults to 1)
 
 class DailyUpload(BaseModel):
     user_id: str

@@ -99,6 +99,7 @@ class DatabaseService:
                 date=date,
                 num_vibrations=session.num_vibrations,
                 user_complied=session.user_complied,
+                group_id=session.group_id,
                 is_target_app=session.app_name in get_social_media_apps()
             )
             db.add(db_session)
