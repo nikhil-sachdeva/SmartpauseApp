@@ -160,6 +160,21 @@ class ModelDownload(BaseModel):
     user_id: str
     day_number: int
 
+class CustomBaselineStats(BaseModel):
+    user_id: str
+    total_sessions: int
+    total_usage_time_minutes: int
+    unique_apps: int
+    most_used_app: str
+    avg_session_duration: float
+    peak_usage_hour: int
+
+class SampleDataUpload(BaseModel):
+    user_id: str
+    baseline_stats: CustomBaselineStats
+    sample_sessions: List[Session]
+    agent_parameters: Dict
+
 # ============================================================================
 # Q-LEARNING AGENT (SERIALIZABLE FOR EDGE DEPLOYMENT)
 # ============================================================================
@@ -891,6 +906,166 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
             }
             for log in training_logs[:10]
         ]
+    }
+
+@app.post("/api/v1/baseline/generate-sample")
+async def generate_sample_data():
+    """Generate sample baseline stats and session data for testing"""
+    from datetime import datetime, timedelta
+    import random
+    
+    # Generate a sample user ID
+    sample_user_id = f"sample_user_{random.randint(1000, 9999)}"
+    
+    # Sample apps
+    apps = ["Instagram", "TikTok", "Facebook", "Twitter", "YouTube", "Netflix", "Spotify", "Chrome", "WhatsApp", "Slack"]
+    target_apps = ["Instagram", "TikTok", "Facebook", "Twitter", "YouTube"]
+    
+    # Generate baseline stats
+    total_sessions = random.randint(50, 200)
+    total_usage_minutes = random.randint(300, 800)  # 5-13 hours
+    unique_apps = random.randint(5, 10)
+    most_used_app = random.choice(target_apps)
+    avg_session_duration = total_usage_minutes * 60 / total_sessions  # in seconds
+    peak_usage_hour = random.randint(9, 22)  # 9 AM to 10 PM
+    
+    baseline_stats = CustomBaselineStats(
+        user_id=sample_user_id,
+        total_sessions=total_sessions,
+        total_usage_time_minutes=total_usage_minutes,
+        unique_apps=unique_apps,
+        most_used_app=most_used_app,
+        avg_session_duration=avg_session_duration,
+        peak_usage_hour=peak_usage_hour
+    )
+    
+    # Generate sample sessions (last 7 days)
+    sample_sessions = []
+    base_date = datetime.now() - timedelta(days=7)
+    
+    for day in range(7):
+        current_date = base_date + timedelta(days=day)
+        sessions_today = random.randint(5, 15)
+        
+        for session_num in range(sessions_today):
+            app = random.choice(apps)
+            is_target_app = app in target_apps
+            
+            # Generate session times
+            hour = random.randint(8, 23)
+            minute = random.randint(0, 59)
+            start_time = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            
+            # Duration varies by app type
+            if is_target_app:
+                duration = random.randint(60, 1800)  # 1-30 minutes for target apps
+            else:
+                duration = random.randint(30, 600)   # 30 seconds - 10 minutes for others
+            
+            end_time = start_time + timedelta(seconds=duration)
+            
+            # Simulate vibrations and compliance for target apps
+            num_vibrations = 0
+            user_complied = False
+            if is_target_app and duration > 300:  # Vibrate if session > 5 minutes
+                num_vibrations = random.randint(1, 3)
+                user_complied = random.choice([True, False])
+            
+            session = Session(
+                app_name=app,
+                start_time=start_time.isoformat(),
+                end_time=end_time.isoformat(),
+                duration_seconds=duration,
+                num_vibrations=num_vibrations,
+                user_complied=user_complied,
+                group_id=random.randint(1, 5)
+            )
+            sample_sessions.append(session)
+    
+    # Generate agent parameters
+    agent_parameters = {
+        "alpha": 0.1,
+        "gamma": 0.95,
+        "epsilon": random.uniform(0.1, 0.5),
+        "training_steps": random.randint(0, 1000),
+        "q_table_size": random.randint(10, 100)
+    }
+    
+    return {
+        "user_id": sample_user_id,
+        "baseline_stats": baseline_stats.dict(),
+        "sample_sessions": [session.dict() for session in sample_sessions],
+        "agent_parameters": agent_parameters,
+        "summary": {
+            "total_sessions": len(sample_sessions),
+            "days_covered": 7,
+            "target_app_sessions": sum(1 for s in sample_sessions if s.app_name in target_apps),
+            "total_vibrations": sum(s.num_vibrations for s in sample_sessions),
+            "compliance_rate": sum(1 for s in sample_sessions if s.user_complied and s.num_vibrations > 0)
+        }
+    }
+
+@app.post("/api/v1/baseline/upload-custom")
+async def upload_custom_baseline(data: SampleDataUpload, db: SQLSession = Depends(get_db)):
+    """Upload custom baseline stats and sample data for a user"""
+    
+    # Create or update user
+    if not DatabaseService.user_exists(db, data.user_id):
+        DatabaseService.create_user(db, data.user_id)
+    
+    # Upload baseline stats
+    baseline_stats = data.baseline_stats
+    DatabaseService.create_baseline_stats(
+        db=db,
+        user_id=data.user_id,
+        median_target_usage_minutes=baseline_stats.total_usage_time_minutes // baseline_stats.unique_apps,
+        short_session_threshold_seconds=60,  # Default
+        query_interval_seconds=1  # Default
+    )
+    
+    # Upload sample sessions
+    uploaded_count = 0
+    for session_data in data.sample_sessions:
+        try:
+            # Convert to database session format
+            DatabaseService.create_session(
+                db=db,
+                user_id=data.user_id,
+                app_name=session_data.app_name,
+                start_time=session_data.start_time,
+                end_time=session_data.end_time,
+                duration_seconds=session_data.duration_seconds,
+                num_vibrations=session_data.num_vibrations,
+                user_complied=session_data.user_complied,
+                group_id=session_data.group_id,
+                date=session_data.start_time.split('T')[0]  # Extract date from ISO string
+            )
+            uploaded_count += 1
+        except Exception as e:
+            print(f"Error uploading session: {e}")
+            continue
+    
+    # Save agent parameters as model checkpoint
+    if data.agent_parameters:
+        try:
+            DatabaseService.save_model_checkpoint(
+                db=db,
+                user_id=data.user_id,
+                training_step=data.agent_parameters.get("training_steps", 0),
+                epsilon=data.agent_parameters.get("epsilon", 0.1),
+                alpha=data.agent_parameters.get("alpha", 0.1),
+                gamma=data.agent_parameters.get("gamma", 0.95),
+                q_table_dict={}  # Empty Q-table for new user
+            )
+        except Exception as e:
+            print(f"Error saving agent parameters: {e}")
+    
+    return {
+        "message": "Custom baseline data uploaded successfully",
+        "user_id": data.user_id,
+        "sessions_uploaded": uploaded_count,
+        "baseline_stats_created": True,
+        "agent_parameters_saved": bool(data.agent_parameters)
     }
 
 # ============================================================================

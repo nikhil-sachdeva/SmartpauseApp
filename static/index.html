@@ -740,4 +740,564 @@
         });
     </script>
 </body>
+<script>
+// Add navigation link for model data and create model data page
+document.addEventListener('DOMContentLoaded', function() {
+    const body = document.body;
+    const navLink = document.createElement('div');
+    navLink.style.cssText = 'margin-top: 20px; text-align: center;';
+    navLink.innerHTML = `
+        <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-bottom: 20px;">
+            <a href="#" onclick="showModelDataPage()" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Model Data Dashboard</a>
+            <a href="#" onclick="showSampleDataPage()" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Generate Sample Data</a>
+            <a href="#" onclick="showCustomUploadPage()" style="background-color: #ffc107; color: black; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Upload Custom Data</a>
+        </div>
+    `;
+    body.appendChild(navLink);
+});
+
+function showModelDataPage() {
+    // Replace current page content with model data dashboard
+    document.body.innerHTML = `
+        <div style="max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <a href="#" onclick="location.reload()" style="color: #007bff; text-decoration: none; margin: 0 15px; padding: 10px 15px; border-radius: 5px;">← Back to Admin Console</a>
+            </div>
+            
+            <h1 style="color: #333; text-align: center; margin-bottom: 30px;">Model Data Dashboard</h1>
+            
+            <div style="margin-bottom: 20px; text-align: center;">
+                <input type="text" id="userIdInput" placeholder="Enter User ID" style="padding: 10px; margin: 5px; border: 1px solid #ddd; border-radius: 5px;" />
+                <button onclick="loadModelData()" style="padding: 10px; margin: 5px; border: 1px solid #ddd; border-radius: 5px; background-color: #007bff; color: white; cursor: pointer;">Load Model Data</button>
+            </div>
+            
+            <div id="loadingIndicator" style="text-align: center; padding: 20px; color: #666; display: none;">
+                Loading model data...
+            </div>
+            
+            <div id="errorMessage" style="color: #d32f2f; text-align: center; padding: 20px; background-color: #ffebee; border-radius: 5px; margin: 10px 0; display: none;"></div>
+            
+            <div id="modelDataContent" style="display: none;">
+                <div style="margin: 30px 0;">
+                    <h2 style="color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px;">Baseline Statistics</h2>
+                    <div id="baselineStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 20px 0;"></div>
+                </div>
+                
+                <div style="margin: 30px 0;">
+                    <h2 style="color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px;">User Sessions Data</h2>
+                    <table id="sessionsTable" style="width: 100%; border-collapse: collapse; margin: 20px 0; background-color: white;">
+                        <thead>
+                            <tr>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">App Name</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Start Time</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">End Time</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Duration (seconds)</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Date</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Group ID</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sessionsTableBody"></tbody>
+                    </table>
+                </div>
+                
+                <div style="margin: 30px 0;">
+                    <h2 style="color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px;">Agent Data</h2>
+                    <table id="agentTable" style="width: 100%; border-collapse: collapse; margin: 20px 0; background-color: white;">
+                        <thead>
+                            <tr>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Metric</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Value</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Timestamp</th>
+                                <th style="padding: 12px; text-align: left; border-bottom: 1px solid #ddd; background-color: #f8f9fa; font-weight: bold; color: #333;">Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="agentTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Add event listener for Enter key
+    document.getElementById('userIdInput').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            loadModelData();
+        }
+    });
+}
+
+async function loadModelData() {
+    const userId = document.getElementById('userIdInput').value.trim();
+    
+    if (!userId) {
+        showError('Please enter a valid User ID');
+        return;
+    }
+    
+    showLoading(true);
+    hideError();
+    hideContent();
+    
+    try {
+        const response = await fetch(\`/api/v1/model/download/\${userId}\`);
+        
+        if (!response.ok) {
+            throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
+        }
+        
+        const modelData = await response.json();
+        displayModelData(modelData);
+        
+    } catch (error) {
+        console.error('Error loading model data:', error);
+        showError(\`Failed to load model data: \${error.message}\`);
+    } finally {
+        showLoading(false);
+    }
+}
+
+function displayModelData(data) {
+    displayBaselineStats(data);
+    displaySessionsData(data.sessions || []);
+    displayAgentData(data.agent_data || []);
+    showContent();
+}
+
+function displayBaselineStats(data) {
+    const statsContainer = document.getElementById('baselineStats');
+    statsContainer.innerHTML = '';
+    
+    const stats = [
+        {
+            title: 'Total Sessions',
+            value: data.sessions ? data.sessions.length : 0
+        },
+        {
+            title: 'Total Usage Time',
+            value: data.sessions ? \`\${Math.round(data.sessions.reduce((sum, s) => sum + (s.duration_seconds || 0), 0) / 60)} min\` : '0 min'
+        },
+        {
+            title: 'Unique Apps',
+            value: data.sessions ? new Set(data.sessions.map(s => s.app_name)).size : 0
+        },
+        {
+            title: 'Data Points',
+            value: data.agent_data ? data.agent_data.length : 0
+        },
+        {
+            title: 'User ID',
+            value: data.user_id || 'N/A'
+        },
+        {
+            title: 'Last Activity',
+            value: data.sessions && data.sessions.length > 0 ? 
+                   new Date(data.sessions[data.sessions.length - 1].end_time).toLocaleDateString() : 'N/A'
+        }
+    ];
+    
+    stats.forEach(stat => {
+        const card = document.createElement('div');
+        card.style.cssText = 'background-color: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #007bff;';
+        card.innerHTML = \`
+            <h3 style="margin: 0 0 10px 0; color: #333;">\${stat.title}</h3>
+            <div style="font-size: 24px; font-weight: bold; color: #007bff;">\${stat.value}</div>
+        \`;
+        statsContainer.appendChild(card);
+    });
+}
+
+function displaySessionsData(sessions) {
+    const tbody = document.getElementById('sessionsTableBody');
+    tbody.innerHTML = '';
+    
+    sessions.forEach(session => {
+        const row = document.createElement('tr');
+        row.style.cssText = 'border-bottom: 1px solid #ddd;';
+        row.innerHTML = \`
+            <td style="padding: 12px;">\${session.app_name || 'N/A'}</td>
+            <td style="padding: 12px;">\${formatDateTime(session.start_time)}</td>
+            <td style="padding: 12px;">\${formatDateTime(session.end_time)}</td>
+            <td style="padding: 12px;">\${session.duration_seconds || 0}</td>
+            <td style="padding: 12px;">\${session.date || 'N/A'}</td>
+            <td style="padding: 12px;">\${session.group_id || 'N/A'}</td>
+        \`;
+        tbody.appendChild(row);
+    });
+}
+
+function displayAgentData(agentData) {
+    const tbody = document.getElementById('agentTableBody');
+    tbody.innerHTML = '';
+    
+    if (typeof agentData === 'object' && !Array.isArray(agentData)) {
+        Object.entries(agentData).forEach(([key, value]) => {
+            const row = document.createElement('tr');
+            row.style.cssText = 'border-bottom: 1px solid #ddd;';
+            row.innerHTML = \`
+                <td style="padding: 12px;">\${key}</td>
+                <td style="padding: 12px;">\${typeof value === 'object' ? JSON.stringify(value) : value}</td>
+                <td style="padding: 12px;">\${new Date().toISOString()}</td>
+                <td style="padding: 12px;">Model Parameter</td>
+            \`;
+            tbody.appendChild(row);
+        });
+    } else if (Array.isArray(agentData)) {
+        agentData.forEach(item => {
+            const row = document.createElement('tr');
+            row.style.cssText = 'border-bottom: 1px solid #ddd;';
+            row.innerHTML = \`
+                <td style="padding: 12px;">\${item.metric || item.name || 'N/A'}</td>
+                <td style="padding: 12px;">\${item.value || item.data || 'N/A'}</td>
+                <td style="padding: 12px;">\${formatDateTime(item.timestamp || item.created_at)}</td>
+                <td style="padding: 12px;">\${item.details || item.type || 'Agent Data'}</td>
+            \`;
+            tbody.appendChild(row);
+        });
+    }
+}
+
+function formatDateTime(dateString) {
+    if (!dateString) return 'N/A';
+    try {
+        return new Date(dateString).toLocaleString();
+    } catch (e) {
+        return dateString;
+    }
+}
+
+function showLoading(show) {
+    document.getElementById('loadingIndicator').style.display = show ? 'block' : 'none';
+}
+
+function showError(message) {
+    const errorEl = document.getElementById('errorMessage');
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+}
+
+function hideError() {
+    document.getElementById('errorMessage').style.display = 'none';
+}
+
+function showContent() {
+    document.getElementById('modelDataContent').style.display = 'block';
+}
+
+function hideContent() {
+    document.getElementById('modelDataContent').style.display = 'none';
+}
+
+// Sample Data Generator Page
+function showSampleDataPage() {
+    document.body.innerHTML = `
+        <div style="max-width: 1000px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <a href="#" onclick="location.reload()" style="color: #007bff; text-decoration: none; margin: 0 15px; padding: 10px 15px; border-radius: 5px;">← Back to Admin Console</a>
+            </div>
+            
+            <h1 style="color: #333; text-align: center; margin-bottom: 30px;">Sample Data Generator</h1>
+            
+            <div style="text-align: center; margin-bottom: 20px;">
+                <button onclick="generateSampleData()" style="background-color: #28a745; color: white; padding: 15px 30px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer;">Generate Sample Data</button>
+            </div>
+            
+            <div id="sampleLoadingIndicator" style="text-align: center; padding: 20px; color: #666; display: none;">
+                Generating sample data...
+            </div>
+            
+            <div id="sampleErrorMessage" style="color: #d32f2f; text-align: center; padding: 20px; background-color: #ffebee; border-radius: 5px; margin: 10px 0; display: none;"></div>
+            
+            <div id="sampleDataContent" style="display: none;">
+                <div style="background-color: #f8f9fa; padding: 20px; border-radius: 10px; margin: 20px 0;">
+                    <h3 style="color: #333; margin-bottom: 15px;">Generated Sample Data</h3>
+                    <div id="sampleSummary" style="margin-bottom: 20px;"></div>
+                    <button onclick="uploadSampleData()" style="background-color: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin-right: 10px; cursor: pointer;">Upload to Database</button>
+                    <button onclick="downloadSampleData()" style="background-color: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">Download JSON</button>
+                </div>
+                
+                <div style="margin-top: 30px;">
+                    <h3 style="color: #333; margin-bottom: 15px;">Baseline Statistics</h3>
+                    <div id="sampleBaselineStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;"></div>
+                </div>
+                
+                <div style="margin-top: 30px;">
+                    <h3 style="color: #333; margin-bottom: 15px;">Sample Sessions Preview (First 10)</h3>
+                    <div id="sampleSessionsTable" style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px;"></div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// Custom Upload Page
+function showCustomUploadPage() {
+    document.body.innerHTML = `
+        <div style="max-width: 1000px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <a href="#" onclick="location.reload()" style="color: #007bff; text-decoration: none; margin: 0 15px; padding: 10px 15px; border-radius: 5px;">← Back to Admin Console</a>
+            </div>
+            
+            <h1 style="color: #333; text-align: center; margin-bottom: 30px;">Custom Baseline Upload</h1>
+            
+            <div style="margin-bottom: 20px;">
+                <label for="customJsonData" style="display: block; margin-bottom: 10px; font-weight: bold; color: #333;">Custom JSON Data:</label>
+                <textarea id="customJsonData" placeholder="Paste your custom JSON data here or click 'Load Sample' to get started..." 
+                    style="width: 100%; height: 300px; padding: 15px; border: 1px solid #ddd; border-radius: 5px; font-family: monospace; font-size: 14px;"></textarea>
+            </div>
+            
+            <div style="text-align: center; margin-bottom: 20px;">
+                <button onclick="loadSampleForCustom()" style="background-color: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin-right: 10px; cursor: pointer;">Load Sample</button>
+                <button onclick="validateCustomData()" style="background-color: #ffc107; color: black; padding: 10px 20px; border: none; border-radius: 5px; margin-right: 10px; cursor: pointer;">Validate</button>
+                <button onclick="uploadCustomData()" style="background-color: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">Upload</button>
+            </div>
+            
+            <div id="customLoadingIndicator" style="text-align: center; padding: 20px; color: #666; display: none;">
+                Processing custom data...
+            </div>
+            
+            <div id="customErrorMessage" style="color: #d32f2f; text-align: center; padding: 20px; background-color: #ffebee; border-radius: 5px; margin: 10px 0; display: none;"></div>
+            <div id="customSuccessMessage" style="color: #2e7d32; text-align: center; padding: 20px; background-color: #e8f5e8; border-radius: 5px; margin: 10px 0; display: none;"></div>
+            
+            <div style="margin-top: 30px; padding: 20px; background-color: #f8f9fa; border-radius: 10px;">
+                <h3 style="color: #333; margin-bottom: 15px;">JSON Structure Reference</h3>
+                <pre style="background-color: #e9ecef; padding: 15px; border-radius: 5px; font-size: 12px; overflow-x: auto;">
+{
+  "user_id": "your_user_id",
+  "baseline_stats": {
+    "user_id": "your_user_id",
+    "total_sessions": 100,
+    "total_usage_time_minutes": 500,
+    "unique_apps": 8,
+    "most_used_app": "Instagram",
+    "avg_session_duration": 300.0,
+    "peak_usage_hour": 14
+  },
+  "sample_sessions": [...],
+  "agent_parameters": {
+    "alpha": 0.1,
+    "gamma": 0.95,
+    "epsilon": 0.3,
+    "training_steps": 250
+  }
+}</pre>
+            </div>
+        </div>
+    `;
+}
+
+let generatedSampleData = null;
+
+async function generateSampleData() {
+    document.getElementById('sampleLoadingIndicator').style.display = 'block';
+    document.getElementById('sampleErrorMessage').style.display = 'none';
+    document.getElementById('sampleDataContent').style.display = 'none';
+    
+    try {
+        const response = await fetch('/api/v1/baseline/generate-sample', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        generatedSampleData = await response.json();
+        displaySampleData(generatedSampleData);
+        
+    } catch (error) {
+        console.error('Error generating sample data:', error);
+        showSampleError(`Failed to generate sample data: ${error.message}`);
+    } finally {
+        document.getElementById('sampleLoadingIndicator').style.display = 'none';
+    }
+}
+
+function displaySampleData(data) {
+    // Display summary
+    document.getElementById('sampleSummary').innerHTML = `
+        <p><strong>User ID:</strong> ${data.user_id}</p>
+        <p><strong>Total Sessions:</strong> ${data.summary.total_sessions}</p>
+        <p><strong>Days Covered:</strong> ${data.summary.days_covered}</p>
+        <p><strong>Target App Sessions:</strong> ${data.summary.target_app_sessions}</p>
+        <p><strong>Total Vibrations:</strong> ${data.summary.total_vibrations}</p>
+    `;
+    
+    // Display baseline stats
+    const statsContainer = document.getElementById('sampleBaselineStats');
+    statsContainer.innerHTML = '';
+    const stats = data.baseline_stats;
+    Object.entries(stats).forEach(([key, value]) => {
+        if (key !== 'user_id') {
+            const card = document.createElement('div');
+            card.style.cssText = 'background-color: #e3f2fd; padding: 15px; border-radius: 8px; text-align: center;';
+            card.innerHTML = `
+                <div style="font-weight: bold; color: #1976d2; margin-bottom: 5px;">${key.replace(/_/g, ' ').toUpperCase()}</div>
+                <div style="font-size: 18px; color: #333;">${value}</div>
+            `;
+            statsContainer.appendChild(card);
+        }
+    });
+    
+    // Display sessions preview
+    const sessionsContainer = document.getElementById('sampleSessionsTable');
+    let sessionsHTML = '<table style="width: 100%; border-collapse: collapse;"><tr><th style="border: 1px solid #ddd; padding: 8px; background: #f5f5f5;">App</th><th style="border: 1px solid #ddd; padding: 8px; background: #f5f5f5;">Duration</th><th style="border: 1px solid #ddd; padding: 8px; background: #f5f5f5;">Vibrations</th><th style="border: 1px solid #ddd; padding: 8px; background: #f5f5f5;">Complied</th></tr>';
+    
+    data.sample_sessions.slice(0, 10).forEach(session => {
+        sessionsHTML += `<tr>
+            <td style="border: 1px solid #ddd; padding: 8px;">${session.app_name}</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${Math.round(session.duration_seconds / 60)}m</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${session.num_vibrations}</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${session.user_complied ? 'Yes' : 'No'}</td>
+        </tr>`;
+    });
+    sessionsHTML += '</table>';
+    sessionsContainer.innerHTML = sessionsHTML;
+    
+    document.getElementById('sampleDataContent').style.display = 'block';
+}
+
+async function uploadSampleData() {
+    if (!generatedSampleData) {
+        showSampleError('No sample data to upload. Please generate sample data first.');
+        return;
+    }
+    
+    document.getElementById('sampleLoadingIndicator').style.display = 'block';
+    
+    try {
+        const response = await fetch('/api/v1/baseline/upload-custom', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(generatedSampleData)
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        alert(`Sample data uploaded successfully!\\nSessions uploaded: ${result.sessions_uploaded}\\nUser: ${result.user_id}`);
+        
+    } catch (error) {
+        showSampleError(`Failed to upload sample data: ${error.message}`);
+    } finally {
+        document.getElementById('sampleLoadingIndicator').style.display = 'none';
+    }
+}
+
+function downloadSampleData() {
+    if (!generatedSampleData) {
+        showSampleError('No sample data to download. Please generate sample data first.');
+        return;
+    }
+    
+    const dataStr = JSON.stringify(generatedSampleData, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sample_data_${generatedSampleData.user_id}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+}
+
+async function loadSampleForCustom() {
+    try {
+        const response = await fetch('/api/v1/baseline/generate-sample', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const sampleData = await response.json();
+        document.getElementById('customJsonData').value = JSON.stringify(sampleData, null, 2);
+        
+    } catch (error) {
+        showCustomError(`Failed to load sample data: ${error.message}`);
+    }
+}
+
+function validateCustomData() {
+    const jsonData = document.getElementById('customJsonData').value.trim();
+    
+    if (!jsonData) {
+        showCustomError('Please enter JSON data to validate.');
+        return;
+    }
+    
+    try {
+        const data = JSON.parse(jsonData);
+        
+        // Basic validation
+        const required = ['user_id', 'baseline_stats', 'sample_sessions', 'agent_parameters'];
+        const missing = required.filter(field => !data[field]);
+        
+        if (missing.length > 0) {
+            showCustomError(`Missing required fields: ${missing.join(', ')}`);
+            return;
+        }
+        
+        showCustomSuccess(`JSON is valid! Found ${data.sample_sessions.length} sessions for user ${data.user_id}`);
+        
+    } catch (error) {
+        showCustomError(`Invalid JSON: ${error.message}`);
+    }
+}
+
+async function uploadCustomData() {
+    const jsonData = document.getElementById('customJsonData').value.trim();
+    
+    if (!jsonData) {
+        showCustomError('Please enter JSON data to upload.');
+        return;
+    }
+    
+    document.getElementById('customLoadingIndicator').style.display = 'block';
+    document.getElementById('customErrorMessage').style.display = 'none';
+    document.getElementById('customSuccessMessage').style.display = 'none';
+    
+    try {
+        const data = JSON.parse(jsonData);
+        
+        const response = await fetch('/api/v1/baseline/upload-custom', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        showCustomSuccess(`Custom data uploaded successfully!\\nSessions uploaded: ${result.sessions_uploaded}\\nUser: ${result.user_id}`);
+        
+    } catch (error) {
+        showCustomError(`Failed to upload custom data: ${error.message}`);
+    } finally {
+        document.getElementById('customLoadingIndicator').style.display = 'none';
+    }
+}
+
+function showSampleError(message) {
+    document.getElementById('sampleErrorMessage').textContent = message;
+    document.getElementById('sampleErrorMessage').style.display = 'block';
+}
+
+function showCustomError(message) {
+    document.getElementById('customErrorMessage').textContent = message;
+    document.getElementById('customErrorMessage').style.display = 'block';
+    document.getElementById('customSuccessMessage').style.display = 'none';
+}
+
+function showCustomSuccess(message) {
+    document.getElementById('customSuccessMessage').textContent = message;
+    document.getElementById('customSuccessMessage').style.display = 'block';
+    document.getElementById('customErrorMessage').style.display = 'none';
+}
+</script>
 </html>
