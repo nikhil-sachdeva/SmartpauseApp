@@ -174,6 +174,7 @@ class SampleDataUpload(BaseModel):
     baseline_stats: CustomBaselineStats
     sample_sessions: List[Session]
     agent_parameters: Dict
+    q_table: Optional[Dict] = None
 
 # ============================================================================
 # Q-LEARNING AGENT (SERIALIZABLE FOR EDGE DEPLOYMENT)
@@ -641,6 +642,22 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
     
     user = DatabaseService.create_user(db, registration.user_id, registration.device_info, apps_to_monitor)
     
+    # Create basic Q-table model for new user (proper RL initialization with zeros)
+    try:
+        basic_qtable = generate_basic_qtable_for_new_user(registration.user_id)
+        DatabaseService.save_model_checkpoint(
+            db=db,
+            user_id=registration.user_id,
+            training_step=0,
+            epsilon=0.9,  # High exploration for new user
+            alpha=0.1,
+            gamma=0.95,
+            q_table=basic_qtable
+        )
+        print(f"  ✅ Basic Q-table model created for new user (32 states, all zeros)")
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not create basic model for new user: {e}")
+    
     print(f"  ✅ User created successfully")
     print(f"  Saved apps_to_monitor: {user.apps_to_monitor}\n")
     
@@ -738,24 +755,50 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
     
     baseline_stats = DatabaseService.get_baseline_stats(db, user_id)
     
-    if not baseline_stats:
-        raise HTTPException(
-            status_code=400,
-            detail="Complete baseline week (days 0-6) first before downloading model"
-        )
+    # Allow access even without baseline stats for viewing purposes
+    baseline_data = {}
+    if baseline_stats:
+        baseline_data = {
+            "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
+            "short_session_threshold_seconds": baseline_stats.short_session_threshold_seconds,
+            "query_interval_seconds": baseline_stats.query_interval_seconds
+        }
+    else:
+        # Provide default values if no baseline stats exist
+        baseline_data = {
+            "median_target_usage_minutes": 0,
+            "short_session_threshold_seconds": 60,
+            "query_interval_seconds": 1
+        }
     
     # Get latest model checkpoint
     checkpoint = DatabaseService.get_latest_model(db, user_id)
     
+    # Get sessions data for the user
+    sessions_data = []
+    try:
+        sessions = DatabaseService.get_all_sessions(db, user_id)
+        for session in sessions:
+            sessions_data.append({
+                "app_name": session.app_name,
+                "start_time": session.start_time,
+                "end_time": session.end_time,
+                "duration_seconds": session.duration_seconds,
+                "num_vibrations": session.num_vibrations,
+                "user_complied": session.user_complied,
+                "group_id": session.group_id,
+                "date": session.date
+            })
+    except Exception as e:
+        print(f"Error fetching sessions: {e}")
+        sessions_data = []
+    
     model_data = {
         "user_id": user_id,
         "model_version": checkpoint.training_step if checkpoint else 0,
-        "updated_at": datetime.now().isoformat(),
-        "baseline_stats": {
-            "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
-            "short_session_threshold_seconds": baseline_stats.short_session_threshold_seconds,
-            "query_interval_seconds": baseline_stats.query_interval_seconds
-        },
+        "updated_at": checkpoint.created_at.isoformat() if checkpoint else datetime.now().isoformat(),
+        "baseline_stats": baseline_data,
+        "sessions": sessions_data,
         "reward_config": REWARD_CONFIG,
         "social_media_apps": SOCIAL_MEDIA_APPS,
     }
@@ -765,8 +808,17 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
         model_data["format"] = "binary"
     else:
         # Return Q-table as JSON
-        model_data["agent_data"] = checkpoint.q_table_json if checkpoint else {}
+        q_table = checkpoint.q_table_json if checkpoint else {}
+        model_data["agent_data"] = q_table
         model_data["format"] = "json"
+        model_data["q_table_info"] = {
+            "states_count": len(q_table) if q_table else 0,
+            "has_q_table": bool(q_table),
+            "training_step": checkpoint.training_step if checkpoint else 0,
+            "epsilon": checkpoint.epsilon if checkpoint else 0.9,
+            "alpha": checkpoint.alpha if checkpoint else 0.1,
+            "gamma": checkpoint.gamma if checkpoint else 0.95
+        }
     
     return model_data
 
@@ -908,14 +960,125 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
         ]
     }
 
+def generate_realistic_qtable(user_id: str) -> dict:
+    """Generate a Q-table with proper RL initialization (not pre-learned values)"""
+    import random
+    random.seed(hash(user_id) % 1000)  # User-specific but reproducible
+    
+    qtable = {}
+    
+    # State variables:
+    # - monitored_app: 0 (not monitored), 1 (monitored)
+    # - session_length: 0 (short), 1 (long)  
+    # - time_of_day: 0 (morning), 1 (afternoon), 2 (evening), 3 (night)
+    # - day_type: 0 (weekday), 1 (weekend)
+    
+    for monitored_app in [0, 1]:
+        for session_length in [0, 1]:
+            for time_of_day in [0, 1, 2, 3]:
+                for day_type in [0, 1]:
+                    # Create state key as combination: "monitored_session_time_day"
+                    state = f"{monitored_app}_{session_length}_{time_of_day}_{day_type}"
+                    
+                    # Standard RL initialization approaches:
+                    # Option 1: Zero initialization (most common)
+                    # Option 2: Small random values around 0
+                    # Option 3: Optimistic initialization (encourage exploration)
+                    
+                    # Using small random initialization around 0 (common practice)
+                    no_vibrate_q = round(random.uniform(-0.1, 0.1), 3)
+                    vibrate_q = round(random.uniform(-0.1, 0.1), 3)
+                    
+                    qtable[state] = {
+                        "0": no_vibrate_q,  # no_vibrate action
+                        "1": vibrate_q      # vibrate action
+                    }
+    
+    return qtable
+
+def generate_learned_qtable(user_id: str) -> dict:
+    """Generate a Q-table that simulates what it might look like after training"""
+    import random
+    random.seed(hash(user_id) % 1000)  # User-specific but reproducible
+    
+    qtable = {}
+    
+    # Start with initialized values and simulate learning
+    for monitored_app in [0, 1]:
+        for session_length in [0, 1]:
+            for time_of_day in [0, 1, 2, 3]:
+                for day_type in [0, 1]:
+                    state = f"{monitored_app}_{session_length}_{time_of_day}_{day_type}"
+                    
+                    # Simulate learned Q-values based on expected reward patterns
+                    # This represents what might emerge after training with user feedback
+                    
+                    intervention_score = 0.0
+                    if monitored_app == 1: intervention_score += 0.4
+                    if session_length == 1: intervention_score += 0.3
+                    if time_of_day == 2: intervention_score += 0.2
+                    elif time_of_day == 3: intervention_score += 0.3
+                    elif time_of_day == 1: intervention_score += 0.1
+                    if day_type == 1: intervention_score += 0.1
+                    
+                    # Learned values after training (what algorithm might discover)
+                    if intervention_score >= 0.7:
+                        no_vibrate_q = round(random.uniform(-0.6, -0.2), 3)
+                        vibrate_q = round(random.uniform(0.6, 1.0), 3)
+                    elif intervention_score >= 0.4:
+                        no_vibrate_q = round(random.uniform(-0.3, 0.1), 3)
+                        vibrate_q = round(random.uniform(0.3, 0.7), 3)
+                    elif intervention_score >= 0.2:
+                        no_vibrate_q = round(random.uniform(0.0, 0.4), 3)
+                        vibrate_q = round(random.uniform(0.2, 0.5), 3)
+                    else:
+                        no_vibrate_q = round(random.uniform(0.4, 0.8), 3)
+                        vibrate_q = round(random.uniform(-0.2, 0.2), 3)
+                    
+                    qtable[state] = {
+                        "0": no_vibrate_q,
+                        "1": vibrate_q
+                    }
+    
+    return qtable
+
+def generate_basic_qtable_for_new_user(user_id: str) -> dict:
+    """Generate a basic Q-table with zero initialization for new users"""
+    qtable = {}
+    
+    # Generate all 32 states with zero initialization (proper RL start)
+    for monitored_app in [0, 1]:
+        for session_length in [0, 1]:
+            for time_of_day in [0, 1, 2, 3]:
+                for day_type in [0, 1]:
+                    state = f"{monitored_app}_{session_length}_{time_of_day}_{day_type}"
+                    qtable[state] = {
+                        "0": 0.0,  # no_vibrate action starts at 0
+                        "1": 0.0   # vibrate action starts at 0
+                    }
+    
+    return qtable
+
 @app.post("/api/v1/baseline/generate-sample")
-async def generate_sample_data():
+async def generate_sample_data(request_data: Optional[Dict] = None):
     """Generate sample baseline stats and session data for testing"""
     from datetime import datetime, timedelta
     import random
     
-    # Generate a sample user ID
-    sample_user_id = f"sample_user_{random.randint(1000, 9999)}"
+    # Parse request parameters with defaults
+    if request_data is None:
+        request_data = {}
+    
+    user_id = request_data.get('user_id')
+    days = request_data.get('days', 7)
+    sessions_per_day = request_data.get('sessions_per_day', 8)
+    
+    # Validate parameters
+    days = max(1, min(30, days))  # Between 1-30 days
+    sessions_per_day = max(1, min(20, sessions_per_day))  # Between 1-20 sessions per day
+    
+    # Generate a sample user ID if not provided
+    sample_user_id = user_id if user_id else f"sample_user_{random.randint(1000, 9999)}"
     
     # Sample apps
     apps = ["Instagram", "TikTok", "Facebook", "Twitter", "YouTube", "Netflix", "Spotify", "Chrome", "WhatsApp", "Slack"]
@@ -939,13 +1102,13 @@ async def generate_sample_data():
         peak_usage_hour=peak_usage_hour
     )
     
-    # Generate sample sessions (last 7 days)
+    # Generate sample sessions
     sample_sessions = []
-    base_date = datetime.now() - timedelta(days=7)
+    base_date = datetime.now() - timedelta(days=days)
     
-    for day in range(7):
+    for day in range(days):
         current_date = base_date + timedelta(days=day)
-        sessions_today = random.randint(5, 15)
+        sessions_today = random.randint(max(1, sessions_per_day - 3), sessions_per_day + 3)
         
         for session_num in range(sessions_today):
             app = random.choice(apps)
@@ -991,17 +1154,38 @@ async def generate_sample_data():
         "q_table_size": random.randint(10, 100)
     }
     
+    # Generate Q-table (proper RL initialization by default, learned version optional)
+    q_table_type = request_data.get('q_table_type', 'initialized')  # 'initialized' or 'learned'
+    
+    if q_table_type == 'learned':
+        q_table = generate_learned_qtable(sample_user_id)
+        q_table_description = "Simulated post-training Q-table with learned values"
+    else:
+        q_table = generate_realistic_qtable(sample_user_id)
+        q_table_description = "Properly initialized Q-table (small random values around 0)"
+    
     return {
         "user_id": sample_user_id,
         "baseline_stats": baseline_stats.dict(),
         "sample_sessions": [session.dict() for session in sample_sessions],
+        "q_table": q_table,
         "agent_parameters": agent_parameters,
         "summary": {
             "total_sessions": len(sample_sessions),
-            "days_covered": 7,
+            "days_covered": days,
             "target_app_sessions": sum(1 for s in sample_sessions if s.app_name in target_apps),
             "total_vibrations": sum(s.num_vibrations for s in sample_sessions),
-            "compliance_rate": sum(1 for s in sample_sessions if s.user_complied and s.num_vibrations > 0)
+            "compliance_rate": sum(1 for s in sample_sessions if s.user_complied and s.num_vibrations > 0),
+            "q_table_states": len(q_table),  # Should be 32 states
+            "q_table_actions": 2,  # vibrate vs no_vibrate
+            "q_table_type": q_table_type,
+            "q_table_description": q_table_description,
+            "state_variables": {
+                "monitored_app": "0=not_monitored, 1=monitored",
+                "session_length": "0=short, 1=long", 
+                "time_of_day": "0=morning, 1=afternoon, 2=evening, 3=night",
+                "day_type": "0=weekday, 1=weekend"
+            }
         }
     }
 
@@ -1012,60 +1196,106 @@ async def upload_custom_baseline(data: SampleDataUpload, db: SQLSession = Depend
     # Create or update user
     if not DatabaseService.user_exists(db, data.user_id):
         DatabaseService.create_user(db, data.user_id)
-    
-    # Upload baseline stats
-    baseline_stats = data.baseline_stats
-    DatabaseService.create_baseline_stats(
-        db=db,
-        user_id=data.user_id,
-        median_target_usage_minutes=baseline_stats.total_usage_time_minutes // baseline_stats.unique_apps,
-        short_session_threshold_seconds=60,  # Default
-        query_interval_seconds=1  # Default
-    )
-    
-    # Upload sample sessions
-    uploaded_count = 0
-    for session_data in data.sample_sessions:
+        
+        # Create basic Q-table model for new user if they don't have one
         try:
-            # Convert to database session format
-            DatabaseService.create_session(
-                db=db,
-                user_id=data.user_id,
-                app_name=session_data.app_name,
-                start_time=session_data.start_time,
-                end_time=session_data.end_time,
-                duration_seconds=session_data.duration_seconds,
-                num_vibrations=session_data.num_vibrations,
-                user_complied=session_data.user_complied,
-                group_id=session_data.group_id,
-                date=session_data.start_time.split('T')[0]  # Extract date from ISO string
-            )
-            uploaded_count += 1
-        except Exception as e:
-            print(f"Error uploading session: {e}")
-            continue
-    
-    # Save agent parameters as model checkpoint
-    if data.agent_parameters:
-        try:
+            basic_qtable = generate_basic_qtable_for_new_user(data.user_id)
             DatabaseService.save_model_checkpoint(
                 db=db,
                 user_id=data.user_id,
-                training_step=data.agent_parameters.get("training_steps", 0),
-                epsilon=data.agent_parameters.get("epsilon", 0.1),
-                alpha=data.agent_parameters.get("alpha", 0.1),
-                gamma=data.agent_parameters.get("gamma", 0.95),
-                q_table_dict={}  # Empty Q-table for new user
+                training_step=0,
+                epsilon=0.9,  # High exploration for new user
+                alpha=0.1,
+                gamma=0.95,
+                q_table=basic_qtable
             )
+            print(f"  ✅ Basic Q-table model created for new user {data.user_id}")
         except Exception as e:
-            print(f"Error saving agent parameters: {e}")
+            print(f"  ⚠️  Warning: Could not create basic model: {e}")
+    
+    # Upload baseline stats
+    baseline_stats = data.baseline_stats
+    stats_dict = {
+        "median_target_usage_minutes": baseline_stats.total_usage_time_minutes // max(baseline_stats.unique_apps, 1),
+        "short_session_threshold_seconds": 60,  # Default
+        "query_interval_seconds": 1  # Default
+    }
+    DatabaseService.save_baseline_stats(
+        db=db,
+        user_id=data.user_id,
+        stats=stats_dict
+    )
+    
+    # Upload sample sessions using save_sessions method
+    if data.sample_sessions:
+        try:
+            # Convert session data to list format expected by save_sessions
+            sessions_list = []
+            for session_data in data.sample_sessions:
+                sessions_list.append(session_data)
+            
+            # Use save_sessions method with current date
+            DatabaseService.save_sessions(
+                db=db,
+                user_id=data.user_id,
+                date=datetime.now().strftime("%Y-%m-%d"),
+                sessions=sessions_list
+            )
+            uploaded_count = len(sessions_list)
+        except Exception as e:
+            print(f"Error uploading sessions: {e}")
+            uploaded_count = 0
+    else:
+        uploaded_count = 0
+    
+    # Save agent parameters as model checkpoint with Q-table
+    qtable_data = None
+    
+    # First priority: use Q-table from sample data if provided
+    if hasattr(data, 'q_table') and data.q_table:
+        qtable_data = data.q_table
+        print(f"Using provided Q-table with {len(qtable_data)} states")
+    
+    # Second priority: generate Q-table if agent parameters exist but no Q-table
+    elif data.agent_parameters:
+        qtable_data = generate_realistic_qtable(data.user_id)
+        print(f"Generated Q-table for user {data.user_id} with {len(qtable_data)} states")
+    
+    # Third priority: create basic zero-initialized Q-table for new user
+    else:
+        qtable_data = generate_basic_qtable_for_new_user(data.user_id)
+        print(f"Created basic Q-table for new user {data.user_id} with {len(qtable_data)} states")
+    
+    # Save the model checkpoint with Q-table
+    try:
+        DatabaseService.save_model_checkpoint(
+            db=db,
+            user_id=data.user_id,
+            training_step=data.agent_parameters.get("training_steps", 0) if data.agent_parameters else 0,
+            epsilon=data.agent_parameters.get("epsilon", 0.9) if data.agent_parameters else 0.9,
+            alpha=data.agent_parameters.get("alpha", 0.1) if data.agent_parameters else 0.1,
+            gamma=data.agent_parameters.get("gamma", 0.95) if data.agent_parameters else 0.95,
+            q_table=qtable_data
+        )
+        model_saved = True
+        print(f"✅ Model checkpoint saved for user {data.user_id}")
+    except Exception as e:
+        print(f"❌ Error saving model checkpoint: {e}")
+        model_saved = False
     
     return {
         "message": "Custom baseline data uploaded successfully",
         "user_id": data.user_id,
         "sessions_uploaded": uploaded_count,
         "baseline_stats_created": True,
-        "agent_parameters_saved": bool(data.agent_parameters)
+        "agent_parameters_saved": bool(data.agent_parameters),
+        "model_saved": model_saved,
+        "q_table_states": len(qtable_data) if qtable_data else 0,
+        "q_table_source": (
+            "provided_sample_data" if hasattr(data, 'q_table') and data.q_table
+            else "generated_initialized" if data.agent_parameters
+            else "basic_zero_init"
+        )
     }
 
 # ============================================================================

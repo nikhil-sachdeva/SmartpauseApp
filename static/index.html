@@ -336,6 +336,7 @@
             <button class="tab-btn" onclick="switchTab('download')">📥 Download Model</button>
             <button class="tab-btn" onclick="switchTab('status')">📊 Model Status</button>
             <button class="tab-btn" onclick="switchTab('analytics')">📈 Analytics</button>
+            <button class="tab-btn" onclick="switchTab('sampledata')">🎲 Sample Data</button>
         </div>
 
         <!-- Register User Tab -->
@@ -499,6 +500,88 @@
                 </form>
 
                 <div id="analyticsResponse" class="response-box"></div>
+            </div>
+        </div>
+
+        <!-- Sample Data Tab -->
+        <div id="sampledata" class="tab-content">
+            <div class="card">
+                <h2>🎲 Add Sample Data</h2>
+                <p style="color: #666; margin: 10px 0 20px;">Generate and upload sample user data for testing and development purposes</p>
+
+                <form id="sampleDataForm" onsubmit="handleSampleDataGeneration(event)">
+                    <div class="form-group">
+                        <label>User ID (optional)</label>
+                        <input type="text" id="sampleUserId" placeholder="Leave empty for auto-generation">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Number of Days</label>
+                        <input type="number" id="sampleDays" value="7" min="1" max="30" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Sessions per Day (average)</label>
+                        <input type="number" id="sampleSessions" value="5" min="1" max="20" required>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit">Generate Sample Data</button>
+                        <button type="button" onclick="testSampleDataFunction()" style="margin-left: 10px; background-color: #ffc107;">Test JS</button>
+                        <button type="button" onclick="uploadGeneratedSampleData()" id="uploadSampleBtn" disabled style="margin-left: 10px;">Upload to Database</button>
+                    </div>
+                </form>
+
+                <div id="sampleDataResponse" class="response-box"></div>
+                
+                <div id="samplePreview" style="display: none; margin-top: 20px;">
+                    <h3>Generated Sample Data Preview</h3>
+                    
+                    <!-- Summary Stats -->
+                    <div id="sampleSummary" style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                        <h4>Summary Statistics</h4>
+                        <div id="summaryContent" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-top: 10px;"></div>
+                    </div>
+                    
+                    <!-- Baseline Stats Table -->
+                    <div style="margin: 20px 0;">
+                        <h4>Baseline Statistics</h4>
+                        <table id="baselineStatsTable" style="width: 100%; border-collapse: collapse; margin: 10px 0; background-color: white; border: 1px solid #ddd;">
+                            <thead>
+                                <tr style="background-color: #f8f9fa;">
+                                    <th style="padding: 10px; text-align: left; border: 1px solid #ddd; font-weight: bold;">Metric</th>
+                                    <th style="padding: 10px; text-align: left; border: 1px solid #ddd; font-weight: bold;">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody id="baselineStatsBody"></tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Sessions Table -->
+                    <div style="margin: 20px 0;">
+                        <h4>Sample Sessions (First 10)</h4>
+                        <table id="sessionsTable" style="width: 100%; border-collapse: collapse; margin: 10px 0; background-color: white; border: 1px solid #ddd;">
+                            <thead>
+                                <tr style="background-color: #f8f9fa;">
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd; font-weight: bold;">App</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd; font-weight: bold;">Duration</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd; font-weight: bold;">Start Time</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd; font-weight: bold;">Vibrations</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd; font-weight: bold;">Complied</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sessionsTableBody"></tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Raw JSON (collapsed) -->
+                    <div style="margin: 20px 0;">
+                        <button onclick="toggleRawJson()" style="background-color: #6c757d; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer;">Show/Hide Raw JSON</button>
+                        <div id="rawJsonData" style="display: none; margin-top: 10px; background-color: #f8f9fa; padding: 15px; border-radius: 8px;">
+                            <pre id="sampleDataContent" style="max-height: 300px; overflow-y: auto; font-size: 12px;"></pre>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -738,6 +821,223 @@
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('uploadDate').value = today;
         });
+
+        // Test function to verify JavaScript is working
+        function testSampleDataFunction() {
+            console.log('Test function called successfully');
+            alert('JavaScript is working!');
+        }
+
+        // Sample Data Tab Functions
+        let generatedSampleDataForTab = null;
+
+        async function handleSampleDataGeneration(event) {
+            console.log('handleSampleDataGeneration called');
+            event.preventDefault();
+            
+            const userId = document.getElementById('sampleUserId').value.trim();
+            const days = parseInt(document.getElementById('sampleDays').value);
+            const sessions = parseInt(document.getElementById('sampleSessions').value);
+            
+            console.log('Form values:', { userId, days, sessions });
+            
+            const responseDiv = document.getElementById('sampleDataResponse');
+            if (!responseDiv) {
+                console.error('sampleDataResponse element not found');
+                return;
+            }
+            
+            responseDiv.innerHTML = '<div style="color: #666; padding: 10px;">Generating sample data...</div>';
+            
+            try {
+                const requestBody = {};
+                if (userId) requestBody.user_id = userId;
+                if (days && !isNaN(days)) requestBody.days = days;
+                if (sessions && !isNaN(sessions)) requestBody.sessions_per_day = sessions;
+                
+                console.log('Sending request:', requestBody);
+                
+                const response = await fetch('/api/v1/baseline/generate-sample', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                console.log('Response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
+                }
+                
+                generatedSampleDataForTab = await response.json();
+                console.log('Generated data:', generatedSampleDataForTab);
+                
+                displaySampleDataPreview(generatedSampleDataForTab);
+                
+                responseDiv.innerHTML = '<div style="color: #2e7d32; padding: 10px; background-color: #e8f5e8; border-radius: 5px;">Sample data generated successfully!</div>';
+                
+                // Enable upload button
+                const uploadBtn = document.getElementById('uploadSampleBtn');
+                if (uploadBtn) {
+                    uploadBtn.disabled = false;
+                }
+                
+            } catch (error) {
+                console.error('Sample data generation error:', error);
+                responseDiv.innerHTML = `<div style="color: #d32f2f; padding: 10px; background-color: #ffebee; border-radius: 5px;">Failed to generate sample data: ${error.message}</div>`;
+                const uploadBtn = document.getElementById('uploadSampleBtn');
+                if (uploadBtn) {
+                    uploadBtn.disabled = true;
+                }
+            }
+        }
+
+        function displaySampleDataPreview(data) {
+            console.log('displaySampleDataPreview called with:', data);
+            
+            const preview = document.getElementById('samplePreview');
+            
+            if (!preview) {
+                console.error('Preview element not found');
+                return;
+            }
+            
+            // Display summary statistics
+            displaySummaryStats(data);
+            
+            // Display baseline stats table
+            displayBaselineStatsTable(data.baseline_stats);
+            
+            // Display sessions table
+            displaySessionsTable(data.sample_sessions);
+            
+            // Display raw JSON
+            const content = document.getElementById('sampleDataContent');
+            if (content) {
+                content.textContent = JSON.stringify(data, null, 2);
+            }
+            
+            preview.style.display = 'block';
+            console.log('Preview displayed successfully');
+        }
+        
+        function displaySummaryStats(data) {
+            const summaryContent = document.getElementById('summaryContent');
+            if (!summaryContent) return;
+            
+            const stats = [
+                { label: 'User ID', value: data.user_id },
+                { label: 'Total Sessions', value: data.summary.total_sessions },
+                { label: 'Days Covered', value: data.summary.days_covered },
+                { label: 'Target App Sessions', value: data.summary.target_app_sessions },
+                { label: 'Total Vibrations', value: data.summary.total_vibrations },
+                { label: 'Compliance Rate', value: data.summary.compliance_rate }
+            ];
+            
+            summaryContent.innerHTML = stats.map(stat => `
+                <div style="background-color: white; padding: 10px; border-radius: 5px; text-align: center; border: 1px solid #ddd;">
+                    <div style="font-size: 12px; color: #666; margin-bottom: 5px;">${stat.label}</div>
+                    <div style="font-size: 16px; font-weight: bold; color: #333;">${stat.value}</div>
+                </div>
+            `).join('');
+        }
+        
+        function displayBaselineStatsTable(baselineStats) {
+            const tbody = document.getElementById('baselineStatsBody');
+            if (!tbody || !baselineStats) return;
+            
+            const rows = Object.entries(baselineStats).map(([key, value]) => {
+                const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                return `
+                    <tr>
+                        <td style="padding: 8px; border: 1px solid #ddd; font-weight: 500;">${displayKey}</td>
+                        <td style="padding: 8px; border: 1px solid #ddd;">${value}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            tbody.innerHTML = rows;
+        }
+        
+        function displaySessionsTable(sessions) {
+            const tbody = document.getElementById('sessionsTableBody');
+            if (!tbody || !sessions) return;
+            
+            const rows = sessions.slice(0, 10).map(session => {
+                const startTime = new Date(session.start_time).toLocaleString();
+                const duration = `${Math.round(session.duration_seconds / 60)}m ${session.duration_seconds % 60}s`;
+                return `
+                    <tr>
+                        <td style="padding: 6px; border: 1px solid #ddd; font-size: 12px;">${session.app_name}</td>
+                        <td style="padding: 6px; border: 1px solid #ddd; font-size: 12px;">${duration}</td>
+                        <td style="padding: 6px; border: 1px solid #ddd; font-size: 12px;">${startTime}</td>
+                        <td style="padding: 6px; border: 1px solid #ddd; font-size: 12px; text-align: center;">${session.num_vibrations}</td>
+                        <td style="padding: 6px; border: 1px solid #ddd; font-size: 12px; text-align: center;">${session.user_complied ? '✓' : '✗'}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            tbody.innerHTML = rows;
+        }
+        
+        function toggleRawJson() {
+            const rawJsonData = document.getElementById('rawJsonData');
+            if (rawJsonData) {
+                rawJsonData.style.display = rawJsonData.style.display === 'none' ? 'block' : 'none';
+            }
+        }
+
+        async function uploadGeneratedSampleData() {
+            if (!generatedSampleDataForTab) {
+                alert('Please generate sample data first!');
+                return;
+            }
+            
+            const responseDiv = document.getElementById('sampleDataResponse');
+            if (responseDiv) {
+                responseDiv.innerHTML = '<div style="color: #666; padding: 10px;">Uploading sample data to database...</div>';
+            }
+            
+            try {
+                console.log('Uploading data:', generatedSampleDataForTab);
+                
+                const response = await fetch('/api/v1/baseline/upload-custom', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(generatedSampleDataForTab)
+                });
+                
+                console.log('Upload response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Upload error response:', errorText);
+                    throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
+                }
+                
+                const result = await response.json();
+                console.log('Upload result:', result);
+                
+                if (responseDiv) {
+                    responseDiv.innerHTML = `<div style="color: #2e7d32; padding: 10px; background-color: #e8f5e8; border-radius: 5px;">
+                        Sample data uploaded successfully!<br>
+                        User: ${result.user_id}<br>
+                        Sessions uploaded: ${result.sessions_uploaded}<br>
+                        Baseline stats created: ${result.baseline_stats_created}
+                    </div>`;
+                }
+                
+            } catch (error) {
+                console.error('Sample data upload error:', error);
+                if (responseDiv) {
+                    responseDiv.innerHTML = `<div style="color: #d32f2f; padding: 10px; background-color: #ffebee; border-radius: 5px;">
+                        Failed to upload sample data:<br>
+                        ${error.message}
+                    </div>`;
+                }
+            }
+        }
     </script>
 </body>
 <script>
