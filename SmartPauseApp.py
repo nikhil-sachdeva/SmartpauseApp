@@ -1,7 +1,7 @@
 """
 SmartQuit Edge ML API
 Backend API for training and serving Q-Learning models to Android devices
-Daily model updates at 3 AM per user
+Daily model updates at 3 AM per user - trains from day 1 regardless of baseline week
 """
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
@@ -304,7 +304,7 @@ def calculate_baseline_stats(sessions: List[Session]) -> Dict:
     if not session_durations:
         return {
             "median_target_usage_minutes": 5,
-            "short_session_threshold_seconds": 120,
+            "short_session_threshold_seconds": 300,
             "query_interval_seconds": 300
         }
     
@@ -330,88 +330,11 @@ def calculate_baseline_stats(sessions: List[Session]) -> Dict:
         "query_interval_seconds": percentile_75
     }
 
-def add_group_ids_to_sessions(sessions: List[Dict], baseline_stats: Dict) -> List[Dict]:
-    """
-    EXACTLY matches original add_group_ids function from SmartQuit.ipynb
-    Groups sessions with gaps less than session_division_seconds (120 seconds default)
-    """
-    session_division_seconds = 120  # From original config
-    
-    group_id = 0
-    group_time = timedelta(seconds=0)
-    previous_end_time = None
-    
-    for session in sessions:
-        if previous_end_time is None or (session['start_time'] - previous_end_time) > timedelta(seconds=session_division_seconds):
-            group_id += 1
-            group_time = timedelta(seconds=0)
-        group_time += session['duration']
-        session['group_time'] = group_time
-        session['group_id'] = group_id
-        previous_end_time = session['end_time']
-    
-    return sessions
-
-def get_first_app_in_group(sessions: List[Dict], group_id: int) -> str:
-    """EXACTLY matches original get_first_app_in_group"""
-    for session in sessions:
-        if session['group_id'] == group_id:
-            return session['app_name']
+def get_first_app_in_group(grouped_session: Dict) -> str:
+    """Get the first app in a grouped session"""
+    if grouped_session.get('sessions') and len(grouped_session['sessions']) > 0:
+        return grouped_session['sessions'][0]['app_name']
     return None
-
-def get_grouped_day_sessions(sessions: List[Dict], baseline_stats: Dict) -> List[Dict]:
-    """
-    EXACTLY matches original get_grouped_day_sessions function
-    Groups sessions and handles compliance
-    """
-    session_division_seconds = 120
-    
-    grouped_sessions = []
-    current_group_sessions = []
-    previous_end_time = None
-    group_id = 1
-    
-    for session in sessions:
-        if previous_end_time is None or \
-           (session['start_time'] - previous_end_time) > timedelta(seconds=session_division_seconds) or \
-           session.get('complied') == 1:
-            # Start a new group
-            if current_group_sessions:
-                grouped_session = create_grouped_session(current_group_sessions, group_id)
-                grouped_sessions.append(grouped_session)
-                group_id += 1
-            current_group_sessions = [session]
-        else:
-            current_group_sessions.append(session)
-        previous_end_time = session['end_time']
-    
-    # Add the last group
-    if current_group_sessions:
-        grouped_session = create_grouped_session(current_group_sessions, group_id)
-        grouped_sessions.append(grouped_session)
-    
-    return grouped_sessions
-
-def create_grouped_session(sessions: List[Dict], group_id: int) -> Dict:
-    """Helper to create grouped session dict"""
-    return {
-        'group_id': group_id,
-        'sessions': sessions,
-        'duration': sum((s['duration'] for s in sessions), timedelta(0)),
-        'target_app_duration': sum((s['duration'] for s in sessions if s['app_name'] in SOCIAL_MEDIA_APPS), timedelta(0)),
-        'action': 1 if any(s.get('action', 0) == 1 for s in sessions) else 0,
-        'start_time': sessions[0]['start_time'],
-        'end_time': sessions[-1]['end_time'],
-        'app_ids': [s['app_name'] for s in sessions],
-        'date': sessions[0]['date'],
-        'total_vibrations': sum((1 for s in sessions if s.get('action', 0) == 1), 0),
-        'complied_vibrations': sum((1 for s in sessions if s.get('complied', 0) == 1 and s.get('action', 0) == 1), 0),
-        'updated_duration': sum(
-            ((s.get('updated_duration', s['duration']) if s.get('complied', 0) == 1 and s.get('action', 0) == 1 else s['duration'])
-             for s in sessions), timedelta(0)
-        ),
-        'total_action_taken': sum((1 for s in sessions if s.get('action_taken', False)), 0)
-    }
 
 def extract_state_from_session(session: Dict, first_app: str, is_first_query: bool, baseline_stats: Dict) -> Tuple:
     """Extract state for action selection during simulation"""
@@ -449,69 +372,6 @@ def extract_state_from_first_app(first_app: str, group: Dict, is_short: int, bas
     is_target = int(first_app in SOCIAL_MEDIA_APPS)
     
     return (is_target, is_short, day_quarter, is_weekday)
-
-def get_grouped_day_sessions_from_actual_data(sessions: List[Dict], baseline_stats: Dict) -> List[Dict]:
-    """
-    Group sessions based on ACTUAL vibration and compliance data from device.
-    When user complies with vibration, it starts a new group.
-    """
-    session_division_seconds = 120
-    
-    grouped_sessions = []
-    current_group_sessions = []
-    previous_end_time = None
-    group_id = 1
-    
-    for session in sessions:
-        # Start new group if:
-        # 1. Time gap > 120 seconds, OR
-        # 2. User complied with vibration in previous session
-        if previous_end_time is None or \
-           (session['start_time'] - previous_end_time) > timedelta(seconds=session_division_seconds) or \
-           (current_group_sessions and current_group_sessions[-1].get('user_complied', False)):
-            
-            # Save previous group
-            if current_group_sessions:
-                grouped_session = create_grouped_session_from_actual_data(current_group_sessions, group_id)
-                grouped_sessions.append(grouped_session)
-                group_id += 1
-            current_group_sessions = [session]
-        else:
-            current_group_sessions.append(session)
-        
-        previous_end_time = session['end_time']
-    
-    # Add the last group
-    if current_group_sessions:
-        grouped_session = create_grouped_session_from_actual_data(current_group_sessions, group_id)
-        grouped_sessions.append(grouped_session)
-    
-    return grouped_sessions
-
-def create_grouped_session_from_actual_data(sessions: List[Dict], group_id: int) -> Dict:
-    """Create grouped session with ACTUAL vibration and compliance data"""
-    
-    # Count actual vibrations and compliances
-    total_vibrations = sum(s.get('num_vibrations', 0) for s in sessions)
-    complied_vibrations = sum(1 for s in sessions if s.get('user_complied', False))
-    
-    # Determine group action (1 if ANY vibration occurred in group)
-    group_action = 1 if any(s.get('num_vibrations', 0) > 0 for s in sessions) else 0
-    
-    return {
-        'group_id': group_id,
-        'sessions': sessions,
-        'duration': sum((s['duration'] for s in sessions), timedelta(0)),
-        'target_app_duration': sum((s['duration'] for s in sessions if s['app_name'] in SOCIAL_MEDIA_APPS), timedelta(0)),
-        'action': group_action,
-        'start_time': sessions[0]['start_time'],
-        'end_time': sessions[-1]['end_time'],
-        'app_ids': [s['app_name'] for s in sessions],
-        'date': sessions[0]['date'],
-        'total_vibrations': total_vibrations,
-        'complied_vibrations': complied_vibrations,
-        'has_social_media': len(set([s['app_name'] for s in sessions]) & set(SOCIAL_MEDIA_APPS)) > 0
-    }
 
 def calculate_reward_from_actual_data(group: Dict, next_group: Dict, median_target_usage_minutes: float) -> float:
     """
@@ -715,11 +575,11 @@ async def upload_daily_sessions(
             stats = calculate_baseline_stats(baseline_sessions)
             DatabaseService.save_baseline_stats(db, batch.user_id, stats)
             response["baseline_stats"] = stats
-            response["message"] = "Baseline week completed. Model training starts from day 7."
+            response["message"] = "Baseline week completed. Model training continues daily."
             print(f"Baseline stats: {stats}")
         
-        # If intervention days (7-34), train model in background
-        elif day_number >= 7:
+        # Train model daily regardless of baseline/intervention period
+        if day_number >= 1:  # Start training from day 1 (after first day of data)
             print(f"Scheduling training for user {batch.user_id}, day {day_number}")
             background_tasks.add_task(
                 train_model_daily,
@@ -727,9 +587,12 @@ async def upload_daily_sessions(
                 batch.date,
                 db
             )
-            response["message"] = f"Training model with day {day_number} data. Updated model ready for download."
+            if day_number >= 7:
+                response["message"] = f"Training model with day {day_number} data (intervention period). Updated model ready for download."
+            else:
+                response["message"] = f"Training model with day {day_number} data (baseline period). Updated model ready for download."
         else:
-            response["message"] = f"Baseline day {day_number} recorded. Continue uploading daily until day 6."
+            response["message"] = f"Day {day_number} recorded. Model training starts from day 1."
         
         # Update user's current day
         DatabaseService.update_user_day(db, batch.user_id, day_number)
@@ -766,9 +629,9 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
     else:
         # Provide default values if no baseline stats exist
         baseline_data = {
-            "median_target_usage_minutes": 0,
-            "short_session_threshold_seconds": 60,
-            "query_interval_seconds": 1
+            "median_target_usage_minutes": 5,
+            "short_session_threshold_seconds": 300,
+            "query_interval_seconds": 300
         }
     
     # Get latest model checkpoint
@@ -1217,8 +1080,8 @@ async def upload_custom_baseline(data: SampleDataUpload, db: SQLSession = Depend
     baseline_stats = data.baseline_stats
     stats_dict = {
         "median_target_usage_minutes": baseline_stats.total_usage_time_minutes // max(baseline_stats.unique_apps, 1),
-        "short_session_threshold_seconds": 60,  # Default
-        "query_interval_seconds": 1  # Default
+        "short_session_threshold_seconds": 300,  # Default
+        "query_interval_seconds": 300  # Default
     }
     DatabaseService.save_baseline_stats(
         db=db,
@@ -1307,19 +1170,28 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
     Background task to train the model with today's uploaded sessions.
     Uses ACTUAL vibration and compliance data from device.
     Logs all training updates to database.
+    Trains daily regardless of baseline/intervention period.
     """
-    # Get baseline stats
+    # Get baseline stats (may be None during baseline period)
     baseline_stats = DatabaseService.get_baseline_stats(db, user_id)
     
-    if not baseline_stats:
-        print(f"No baseline stats for user {user_id}")
-        return
+    if baseline_stats:
+        baseline_stats_dict = {
+            "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
+            "short_session_threshold_seconds": baseline_stats.short_session_threshold_seconds,
+            "query_interval_seconds": baseline_stats.query_interval_seconds
+        }
+        print(f"Using calculated baseline stats for user {user_id}")
+    else:
+        # Use default values during baseline period (before day 6 completion)
+        baseline_stats_dict = {
+            "median_target_usage_minutes": 5,  # Default 60 minutes
+            "short_session_threshold_seconds": 300,  # Default 30 seconds
+            "query_interval_seconds": 300  # Default 30 seconds
+        }
+        print(f"Using default baseline stats for user {user_id} (baseline period or stats not available)")
     
-    baseline_stats_dict = {
-        "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
-        "short_session_threshold_seconds": baseline_stats.short_session_threshold_seconds,
-        "query_interval_seconds": baseline_stats.query_interval_seconds
-    }
+    print(f"Baseline stats: {baseline_stats_dict}")
     
     # Get today's sessions from database
     today_sessions = DatabaseService.get_sessions_by_date(db, user_id, date)
@@ -1353,13 +1225,44 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
             'user_complied': s.user_complied,
             'action': 1 if s.num_vibrations > 0 else 0,
             'complied': 1 if s.user_complied else 0,
+            'group_id': s.group_id  # Use Android-provided group ID
         })
     
-    # Add group IDs
-    session_dicts = add_group_ids_to_sessions(session_dicts, baseline_stats_dict)
+    # Group sessions by Android-provided group_id
+    from collections import defaultdict
+    groups_by_id = defaultdict(list)
+    for session in session_dicts:
+        groups_by_id[session['group_id']].append(session)
     
-    # Group sessions
-    grouped_sessions = get_grouped_day_sessions_from_actual_data(session_dicts, baseline_stats_dict)
+    # Create grouped sessions using Android group IDs
+    grouped_sessions = []
+    for group_id, sessions_in_group in groups_by_id.items():
+        # Sort sessions in group by start time
+        sessions_in_group.sort(key=lambda x: x['start_time'])
+        
+        # Create grouped session data
+        total_vibrations = sum(s['num_vibrations'] for s in sessions_in_group)
+        complied_vibrations = sum(1 for s in sessions_in_group if s['user_complied'])
+        group_action = 1 if any(s['num_vibrations'] > 0 for s in sessions_in_group) else 0
+        
+        grouped_session = {
+            'group_id': group_id,
+            'sessions': sessions_in_group,
+            'duration': sum((s['duration'] for s in sessions_in_group), timedelta(0)),
+            'target_app_duration': sum((s['duration'] for s in sessions_in_group if s['app_name'] in SOCIAL_MEDIA_APPS), timedelta(0)),
+            'action': group_action,
+            'start_time': sessions_in_group[0]['start_time'],
+            'end_time': sessions_in_group[-1]['end_time'],
+            'app_ids': [s['app_name'] for s in sessions_in_group],
+            'date': sessions_in_group[0]['date'],
+            'total_vibrations': total_vibrations,
+            'complied_vibrations': complied_vibrations,
+            'has_social_media': len(set([s['app_name'] for s in sessions_in_group]) & set(SOCIAL_MEDIA_APPS)) > 0
+        }
+        grouped_sessions.append(grouped_session)
+    
+    # Sort groups by start time for sequential learning
+    grouped_sessions.sort(key=lambda x: x['start_time'])
     
     print(f"Created {len(grouped_sessions)} grouped sessions for learning")
     
@@ -1371,16 +1274,16 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         
         next_group = grouped_sessions[i + 1]
         
-        # Extract states
-        first_app = get_first_app_in_group(session_dicts, group['group_id'])
+        # Extract states using Android group data directly
+        first_app = get_first_app_in_group(group)
         is_short = 1 if group['duration'] <= timedelta(seconds=baseline_stats_dict["short_session_threshold_seconds"]) else 0
         state = extract_state_from_first_app(first_app, group, is_short, baseline_stats_dict)
         
-        next_first_app = get_first_app_in_group(session_dicts, next_group['group_id'])
+        next_first_app = get_first_app_in_group(next_group)
         next_is_short = 1 if next_group['duration'] <= timedelta(seconds=baseline_stats_dict["short_session_threshold_seconds"]) else 0
         next_state = extract_state_from_first_app(next_first_app, next_group, next_is_short, baseline_stats_dict)
         
-        # Calculate reward
+        # Calculate reward using Android group data
         reward = calculate_reward_from_actual_data(
             group,
             next_group,
@@ -1426,7 +1329,8 @@ async def root():
         "docs": "/docs",
         "ui": "/static/index.html",
         "database": "Neon PostgreSQL",
-        "update_schedule": "Daily at 3 AM per user",
+        "update_schedule": "Daily at 3 AM per user - trains from day 1",
+        "training_policy": "Trains Q-learning model daily regardless of baseline/intervention period",
         "persistence": "All data points stored in PostgreSQL"
     }
 
