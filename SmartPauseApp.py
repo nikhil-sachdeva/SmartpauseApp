@@ -1198,7 +1198,42 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
     
     if not today_sessions:
         print(f"No sessions for user {user_id} on date {date}")
-        return
+        
+        # Even with no sessions, update the checkpoint to track training attempt
+        checkpoint = DatabaseService.get_latest_model(db, user_id)
+        agent = EdgeQLearningAgent()
+        if checkpoint:
+            agent.q_table = defaultdict(_default_q_values)
+            for k, v in checkpoint.q_table_json.items():
+                agent.q_table[eval(k)] = v
+            agent.epsilon = checkpoint.epsilon
+            agent.training_steps = checkpoint.training_step
+        
+        # Increment training steps to track attempt even with no data
+        agent.training_steps += 1
+        
+        try:
+            DatabaseService.save_model_checkpoint(
+                db, user_id, agent.training_steps, agent.epsilon,
+                agent.alpha, agent.gamma, dict(agent.q_table)
+            )
+            print(f"✅ Model checkpoint updated for user {user_id} - no sessions but training attempt tracked")
+            return {
+                "learned_transitions": 0,
+                "q_table_size": len(agent.q_table),
+                "training_steps": agent.training_steps,
+                "checkpoint_saved": True,
+                "message": "No sessions found, but training attempt tracked"
+            }
+        except Exception as e:
+            print(f"❌ Error saving checkpoint for no-session case: {e}")
+            return {
+                "learned_transitions": 0,
+                "q_table_size": len(agent.q_table) if agent.q_table else 0,
+                "training_steps": agent.training_steps,
+                "checkpoint_saved": False,
+                "message": "No sessions found, checkpoint save failed"
+            }
     
     print(f"Training model for user {user_id} with {len(today_sessions)} sessions from {date}")
     
@@ -1268,6 +1303,8 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
     
     # Learning loop
     learned_count = 0
+    initial_training_steps = agent.training_steps
+    
     for i, group in enumerate(grouped_sessions):
         if i + 1 >= len(grouped_sessions):
             break
@@ -1293,7 +1330,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         # Get Q-values before learning
         q_before = agent.q_table[state][group['action']]
         
-        # Learn
+        # Learn (this will increment agent.training_steps internally)
         agent.learn(state, next_state, group['action'], reward)
         
         # Get Q-values after learning
@@ -1308,13 +1345,43 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         learned_count += 1
         print(f"Learned: state={state}, action={group['action']}, reward={reward:.2f}, next_state={next_state}")
     
-    # Save model checkpoint to database
-    DatabaseService.save_model_checkpoint(
-        db, user_id, agent.training_steps, agent.epsilon,
-        agent.alpha, agent.gamma, dict(agent.q_table)
-    )
+    # ALWAYS save model checkpoint after training attempt (even if no learning occurred)
+    # This ensures the model is updated every time the upload endpoint is called
+    checkpoint_saved = False
+    try:
+        DatabaseService.save_model_checkpoint(
+            db, user_id, agent.training_steps, agent.epsilon,
+            agent.alpha, agent.gamma, dict(agent.q_table)
+        )
+        checkpoint_saved = True
+        print(f"✅ Model checkpoint saved successfully for user {user_id}")
+    except Exception as e:
+        print(f"❌ Error saving model checkpoint for user {user_id}: {e}")
+    
+    # Increment training steps if no learning occurred (to track training attempts)
+    if learned_count == 0 and agent.training_steps == initial_training_steps:
+        agent.training_steps += 1
+        print(f"No learning transitions found, but incrementing training steps to track attempt")
+        # Save again with incremented training steps
+        try:
+            DatabaseService.save_model_checkpoint(
+                db, user_id, agent.training_steps, agent.epsilon,
+                agent.alpha, agent.gamma, dict(agent.q_table)
+            )
+            checkpoint_saved = True
+            print(f"✅ Updated checkpoint with incremented training steps")
+        except Exception as e:
+            print(f"❌ Error saving updated checkpoint: {e}")
     
     print(f"Training complete. Learned from {learned_count} transitions. Q-table size: {len(agent.q_table)}, Training steps: {agent.training_steps}")
+    print(f"Checkpoint saved: {checkpoint_saved}")
+    
+    return {
+        "learned_transitions": learned_count,
+        "q_table_size": len(agent.q_table),
+        "training_steps": agent.training_steps,
+        "checkpoint_saved": checkpoint_saved
+    }
 
 @app.get("/")
 async def root():
