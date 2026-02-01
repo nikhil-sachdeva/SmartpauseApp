@@ -4,7 +4,7 @@ Backend API for training and serving Q-Learning models to Android devices
 Daily model updates at 3 AM per user - trains from day 1 regardless of baseline week
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
@@ -358,15 +358,23 @@ def extract_state_from_first_app(first_app: str, group: Dict, is_short: int, bas
     """Extract state from grouped session for learning"""
     timestamp = group['start_time']
     
+    # Handle timezone-aware timestamps properly
+    # Convert to UTC for consistent time-of-day processing across all users
+    if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo is not None:
+        # Timezone-aware timestamp - convert to UTC
+        from datetime import timezone
+        timestamp = timestamp.astimezone(timezone.utc)
+    # If timezone-naive, assume it's already in the intended timezone
+    
     hour = timestamp.hour
     if 0 <= hour < 6:
-        day_quarter = 0
+        day_quarter = 0  # Night/Early morning (0-6)
     elif 6 <= hour < 12:
-        day_quarter = 1
+        day_quarter = 1  # Morning (6-12)
     elif 12 <= hour < 18:
-        day_quarter = 2
+        day_quarter = 2  # Afternoon (12-18)  
     else:
-        day_quarter = 3
+        day_quarter = 3  # Evening (18-24)
     
     is_weekday = int(timestamp.weekday() < 5)
     is_target = int(first_app in SOCIAL_MEDIA_APPS)
@@ -531,7 +539,6 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
 @app.post("/api/v1/sessions/upload")
 async def upload_daily_sessions(
     batch: DailyUpload,
-    background_tasks: BackgroundTasks,
     db: SQLSession = Depends(get_db)
 ):
     """
@@ -552,6 +559,17 @@ async def upload_daily_sessions(
         if len(batch.sessions) > 0:
             print(f"   Sample session start_time: {batch.sessions[0].start_time} (type: {type(batch.sessions[0].start_time).__name__}, length: {len(str(batch.sessions[0].start_time))})")
             print(f"   Sample session end_time: {batch.sessions[0].end_time} (length: {len(str(batch.sessions[0].end_time))})")
+            
+            # Add timezone parsing verification
+            try:
+                parsed_start = datetime.fromisoformat(batch.sessions[0].start_time)
+                print(f"   ✅ Parsed start_time: {parsed_start} (has timezone: {parsed_start.tzinfo is not None})")
+                if parsed_start.tzinfo:
+                    from datetime import timezone
+                    utc_time = parsed_start.astimezone(timezone.utc)
+                    print(f"   ✅ UTC equivalent: {utc_time} (hour: {utc_time.hour})")
+            except Exception as e:
+                print(f"   ❌ Error parsing sample timestamp: {e}")
         
         # Automatically calculate day number from date
         day_number = DatabaseService.calculate_day_number(db, batch.user_id, batch.date)
@@ -579,18 +597,40 @@ async def upload_daily_sessions(
             print(f"Baseline stats: {stats}")
         
         # Train model daily regardless of baseline/intervention period
+        training_result = None
         if day_number >= 1:  # Start training from day 1 (after first day of data)
-            print(f"Scheduling training for user {batch.user_id}, day {day_number}")
-            background_tasks.add_task(
-                train_model_daily,
-                batch.user_id,
-                batch.date,
-                db
-            )
-            if day_number >= 7:
-                response["message"] = f"Training model with day {day_number} data (intervention period). Updated model ready for download."
-            else:
-                response["message"] = f"Training model with day {day_number} data (baseline period). Updated model ready for download."
+            print(f"Starting synchronous training for user {batch.user_id}, day {day_number}")
+            
+            # Run training synchronously to ensure model is updated before response
+            try:
+                training_result = await train_model_daily(batch.user_id, batch.date, db)
+                print(f"✅ Training completed for user {batch.user_id}: {training_result}")
+                
+                # Add training results to response for confirmation
+                response["model_training"] = {
+                    "status": "completed",
+                    "learned_transitions": training_result.get("learned_transitions", 0),
+                    "q_table_size": training_result.get("q_table_size", 0),
+                    "training_steps": training_result.get("training_steps", 0),
+                    "checkpoint_saved": training_result.get("checkpoint_saved", False)
+                }
+                
+                if day_number >= 7:
+                    response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download."
+                else:
+                    response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download."
+                    
+            except Exception as e:
+                print(f"❌ Training failed for user {batch.user_id}: {e}")
+                response["model_training"] = {
+                    "status": "failed",
+                    "error": str(e),
+                    "learned_transitions": 0,
+                    "q_table_size": 0,
+                    "training_steps": 0,
+                    "checkpoint_saved": False
+                }
+                response["message"] = f"Session upload successful but model training failed for day {day_number}. Error: {str(e)}"
         else:
             response["message"] = f"Day {day_number} recorded. Model training starts from day 1."
         
@@ -687,7 +727,7 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
 
 @app.get("/api/v1/model/status/{user_id}")
 async def get_model_status(user_id: str, db: SQLSession = Depends(get_db)):
-    """Check if model is ready for download and get current day"""
+    """Check if model is ready for download and get current day with detailed training info"""
     if not DatabaseService.user_exists(db, user_id):
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -695,15 +735,34 @@ async def get_model_status(user_id: str, db: SQLSession = Depends(get_db)):
     baseline_stats = DatabaseService.get_baseline_stats(db, user_id)
     checkpoint = DatabaseService.get_latest_model(db, user_id)
     
+    # Get recent training history to show model update activity
+    training_logs = DatabaseService.get_training_history(db, user_id, limit=5)
+    recent_training = []
+    for log in training_logs:
+        recent_training.append({
+            "date": log.date,
+            "reward": log.reward,
+            "action": log.action,
+            "q_value_change": log.q_value_after - log.q_value_before,
+            "updated_at": log.created_at.isoformat() if log.created_at else None
+        })
+    
     return {
         "user_id": user_id,
         "current_day": user.current_day,
         "baseline_completed": baseline_stats is not None,
         "model_ready": baseline_stats is not None and checkpoint is not None and checkpoint.training_step > 0,
-        "training_steps": checkpoint.training_step if checkpoint else 0,
-        "epsilon": checkpoint.epsilon if checkpoint else 1.0,
-        "q_table_size": len(checkpoint.q_table_json) if checkpoint else 0,
-        "last_model_update": checkpoint.created_at.isoformat() if checkpoint else None
+        "model_info": {
+            "training_steps": checkpoint.training_step if checkpoint else 0,
+            "epsilon": checkpoint.epsilon if checkpoint else 1.0,
+            "q_table_size": len(checkpoint.q_table_json) if checkpoint and checkpoint.q_table_json else 0,
+            "last_model_update": checkpoint.created_at.isoformat() if checkpoint else None,
+            "alpha": checkpoint.alpha if checkpoint else 0.1,
+            "gamma": checkpoint.gamma if checkpoint else 0.95
+        },
+        "recent_training_activity": recent_training,
+        "training_active": len(recent_training) > 0,
+        "model_update_confirmed": checkpoint is not None and checkpoint.training_step > 0
     }
 
 @app.post("/api/v1/feedback/upload")
