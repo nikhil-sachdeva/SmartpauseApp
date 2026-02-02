@@ -343,7 +343,7 @@
         <div id="register" class="tab-content active">
             <div class="card">
                 <h2>👤 Register a New User</h2>
-                <p style="color: #666; margin: 10px 0 20px;">Create a new user account and initialize their baseline period</p>
+                <p style="color: #666; margin: 10px 0 20px;">Create a new user account. If baseline stats exist, interventions begin immediately after first data upload!</p>
 
                 <form id="registerForm" onsubmit="handleRegister(event)">
                     <div class="form-group">
@@ -371,10 +371,10 @@
                         <label>Apps to Monitor (Optional)</label>
                         <p style="color: #999; font-size: 0.9em; margin-bottom: 10px;">Leave empty to monitor all social media apps by default</p>
                         <div id="appsCheckboxContainer" style="border: 1px solid #ddd; border-radius: 6px; padding: 15px; max-height: 300px; overflow-y: auto; background-color: #f9f9f9;">
-                            <p style="color: #999; text-align: center;">Enter app names separated by commas, or paste JSON array</p>
-                            <textarea id="appsToMonitor" placeholder='Enter app names: "Instagram, TikTok, Facebook"&#10;OR paste JSON: ["Instagram", "TikTok", "Facebook"]' style="width: 100%; min-height: 100px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 0.9em;"></textarea>
+                            <p style="color: #999; text-align: center;">Enter apps as JSON objects with package_name and app_name</p>
+                            <textarea id="appsToMonitor" placeholder='[{"package_name": "com.instagram.android", "app_name": "Instagram"}, {"package_name": "com.facebook.katana", "app_name": "Facebook"}]' style="width: 100%; min-height: 120px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 0.9em;"></textarea>
                         </div>
-                        <small style="color: #999; margin-top: 5px; display: block;">Apps can be a comma-separated list or JSON array format</small>
+                        <small style="color: #999; margin-top: 5px; display: block;">Apps should be JSON array with objects containing package_name and app_name fields</small>
                     </div>
 
                     <div class="button-group">
@@ -391,7 +391,7 @@
         <div id="upload" class="tab-content">
             <div class="card">
                 <h2>📤 Upload Daily Sessions</h2>
-                <p style="color: #666; margin: 10px 0 20px;">Upload session data from a specific date</p>
+                <p style="color: #666; margin: 10px 0 20px;">Upload session data from a specific date. If baseline stats already exist, interventions start immediately!</p>
 
                 <form id="uploadForm" onsubmit="handleUpload(event)">
                     <div class="field-row">
@@ -413,7 +413,11 @@
                     </div>
 
                     <div class="info-box">
-                        📝 Expected JSON format: Array of sessions with app_name, start_time, end_time, duration_seconds, num_vibrations, user_complied
+                        📝 Expected JSON format: Array of sessions with app_name, package_name, start_time (with timezone), end_time (with timezone), group_id
+                    </div>
+                    
+                    <div class="info-box" style="background: #fff3cd; border-left-color: #ffc107; color: #856404;">
+                        ✨ <strong>Baseline Optimization:</strong> If baseline stats already exist for this user, interventions will start immediately instead of waiting for a 2-day baseline period!
                     </div>
 
                     <div class="button-group">
@@ -449,7 +453,7 @@
                     </div>
 
                     <div class="info-box">
-                        ℹ️ Model is only available after completing the 7-day baseline period
+                        ℹ️ Model is available after completing 2-day baseline period or immediately if baseline stats exist
                     </div>
 
                     <div class="button-group">
@@ -610,36 +614,32 @@
         function loadSampleSessions() {
             const sample = [
                 {
-                    "app_name": "com.instagram.android",
-                    "start_time": "2024-01-09T09:00:00",
-                    "end_time": "2024-01-09T09:15:00",
-                    "duration_seconds": 900,
-                    "num_vibrations": 2,
-                    "user_complied": true
+                    "app_name": "Instagram",
+                    "package_name": "com.instagram.android",
+                    "start_time": "2024-01-09T09:00:00-05:00",
+                    "end_time": "2024-01-09T09:15:00-05:00",
+                    "group_id": "group1"
                 },
                 {
-                    "app_name": "com.google.android.youtube",
-                    "start_time": "2024-01-09T10:00:00",
-                    "end_time": "2024-01-09T10:20:00",
-                    "duration_seconds": 1200,
-                    "num_vibrations": 1,
-                    "user_complied": false
+                    "app_name": "YouTube",
+                    "package_name": "com.google.android.youtube", 
+                    "start_time": "2024-01-09T10:00:00-05:00",
+                    "end_time": "2024-01-09T10:20:00-05:00",
+                    "group_id": "group2"
                 },
                 {
-                    "app_name": "com.facebook.katana",
-                    "start_time": "2024-01-09T14:30:00",
-                    "end_time": "2024-01-09T14:45:00",
-                    "duration_seconds": 900,
-                    "num_vibrations": 0,
-                    "user_complied": false
+                    "app_name": "Facebook",
+                    "package_name": "com.facebook.katana",
+                    "start_time": "2024-01-09T14:30:00-05:00",
+                    "end_time": "2024-01-09T14:45:00-05:00",
+                    "group_id": "group3"
                 },
                 {
-                    "app_name": "com.chrome.android",
-                    "start_time": "2024-01-09T15:00:00",
-                    "end_time": "2024-01-09T15:10:00",
-                    "duration_seconds": 600,
-                    "num_vibrations": 0,
-                    "user_complied": false
+                    "app_name": "Chrome",
+                    "package_name": "com.android.chrome",
+                    "start_time": "2024-01-09T15:00:00-05:00",
+                    "end_time": "2024-01-09T15:10:00-05:00",
+                    "group_id": "group4"
                 }
             ];
             document.getElementById('sessionsJson').value = JSON.stringify(sample, null, 2);
@@ -653,6 +653,12 @@
                 jsonStr = data;
             } else {
                 jsonStr = JSON.stringify(data, null, 2);
+                
+                // Add helpful highlighting for baseline optimization info
+                if (data.baseline_exists !== undefined) {
+                    const baselineStatus = data.baseline_exists ? 'Baseline stats exist - intervention mode!' : 'Collecting baseline data';
+                    jsonStr = `// ✨ ${baselineStatus}\n\n${jsonStr}`;
+                }
             }
 
             element.textContent = jsonStr;
@@ -682,12 +688,18 @@
             let appsToMonitor = null;
             if (appsInput) {
                 try {
-                    // Try to parse as JSON array first
-                    if (appsInput.startsWith('[')) {
-                        appsToMonitor = JSON.parse(appsInput);
-                    } else {
-                        // Parse as comma-separated list
-                        appsToMonitor = appsInput.split(',').map(app => app.trim()).filter(app => app.length > 0);
+                    // Parse as JSON array of objects
+                    appsToMonitor = JSON.parse(appsInput);
+                    
+                    // Validate format
+                    if (!Array.isArray(appsToMonitor)) {
+                        throw new Error('apps_to_monitor must be a JSON array');
+                    }
+                    
+                    for (const app of appsToMonitor) {
+                        if (!app.package_name || !app.app_name) {
+                            throw new Error('Each app must have package_name and app_name fields');
+                        }
                     }
                 } catch (e) {
                     showResponse('registerResponse', `Error parsing apps: ${e.message}`, 400);
@@ -719,7 +731,7 @@
             console.log('Registration Payload:', JSON.stringify(payload, null, 2));
 
             try {
-                const response = await fetch(`${API_BASE}/api/v1/users/register`, {
+                const response = await fetch(`${API_BASE}/api/v1/user/register`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)

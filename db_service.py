@@ -116,11 +116,11 @@ class DatabaseService:
     
     @staticmethod
     def get_baseline_sessions(db: Session, user_id: str) -> list:
-        """Get first 7 days of sessions"""
+        """Get first 2 days of sessions for baseline calculation"""
         # Get unique dates for this user, ordered
         dates = db.query(SessionModel.date).filter(
             SessionModel.user_id == user_id
-        ).distinct().order_by(SessionModel.date).limit(7).all()
+        ).distinct().order_by(SessionModel.date).limit(2).all()
         
         baseline_dates = [d[0] for d in dates]
         

@@ -136,7 +136,7 @@ class GroupedSession(Base):
 
 
 class BaselineStats(Base):
-    """Baseline statistics for a user (from first 7 days)"""
+    """Baseline statistics for a user (from first 2 days)"""
     __tablename__ = "baseline_stats"
     
     id = Column(Integer, primary_key=True, index=True)

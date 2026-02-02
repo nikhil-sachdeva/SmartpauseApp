@@ -1,7 +1,7 @@
 """
 SmartQuit Edge ML API
 Backend API for training and serving Q-Learning models to Android devices
-Daily model updates at 3 AM per user - trains from day 1 regardless of baseline week
+Daily model updates at 3 AM per user - trains from day 1 regardless of baseline period
 """
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -533,7 +533,7 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
         "status": "success",
         "user_id": registration.user_id,
         "apps_to_monitor": apps_to_monitor,
-        "message": "User registered. Please complete baseline week (days 0-6) before intervention."
+        "message": "User registered. Upload data to start model training (interventions begin immediately if you have existing baseline stats)."
     }
 
 @app.post("/api/v1/sessions/upload")
@@ -544,9 +544,12 @@ async def upload_daily_sessions(
     """
     Upload daily session data from device.
     Day number is automatically calculated from the date.
-    Days 0-6 = baseline (no training, just stats)
-    Days 7-34 = intervention (train model daily)
     
+    Baseline Logic:
+    - If user has existing baseline stats: Start interventions immediately  
+    - If no baseline stats: Days 0-1 = baseline (collect stats), Days 2+ = intervention
+    
+    Training: Model trains daily from day 1 regardless of baseline status
     Device should call this every day at 3 AM with yesterday's sessions
     """
     if not DatabaseService.user_exists(db, batch.user_id):
@@ -571,10 +574,15 @@ async def upload_daily_sessions(
             except Exception as e:
                 print(f"   ❌ Error parsing sample timestamp: {e}")
         
+        # Check if baseline stats already exist for this user
+        existing_baseline_stats = DatabaseService.get_baseline_stats(db, batch.user_id)
+        baseline_exists = existing_baseline_stats is not None
+        
         # Automatically calculate day number from date
         day_number = DatabaseService.calculate_day_number(db, batch.user_id, batch.date)
         
         print(f"✅ Calculated day number: {day_number} for date {batch.date}")
+        print(f"✅ Baseline stats exist: {baseline_exists}")
         
         # Save sessions to database
         DatabaseService.save_sessions(db, batch.user_id, batch.date, batch.sessions)
@@ -583,17 +591,27 @@ async def upload_daily_sessions(
             "status": "received",
             "sessions_count": len(batch.sessions),
             "day_number": day_number,
-            "date": batch.date
+            "date": batch.date,
+            "baseline_exists": baseline_exists
         }
         
-        # If we've completed baseline week (day 6), calculate stats
-        if day_number == 6:
+        # Handle baseline stats logic
+        if baseline_exists:
+            # Skip baseline period - user already has baseline stats
+            response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with day {day_number} data."
+            response["baseline_stats"] = {
+                "median_target_usage_minutes": existing_baseline_stats.median_target_usage_minutes,
+                "short_session_threshold_seconds": existing_baseline_stats.short_session_threshold_seconds,
+                "query_interval_seconds": existing_baseline_stats.query_interval_seconds
+            }
+        elif day_number == 1:
+            # Calculate baseline stats after completing 2-day baseline period
             baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
-            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions")
+            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (2-day baseline)")
             stats = calculate_baseline_stats(baseline_sessions)
             DatabaseService.save_baseline_stats(db, batch.user_id, stats)
             response["baseline_stats"] = stats
-            response["message"] = "Baseline week completed. Model training continues daily."
+            response["message"] = "Baseline period completed (2 days). Model training continues daily."
             print(f"Baseline stats: {stats}")
         
         # Train model daily regardless of baseline/intervention period
@@ -615,7 +633,10 @@ async def upload_daily_sessions(
                     "checkpoint_saved": training_result.get("checkpoint_saved", False)
                 }
                 
-                if day_number >= 7:
+                # Determine if we're in intervention period based on baseline existence or day number
+                if baseline_exists:
+                    response["message"] = f"Training completed with day {day_number} data (intervention period - baseline exists). Model updated and ready for download."
+                elif day_number >= 2:
                     response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download."
                 else:
                     response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download."
@@ -1242,11 +1263,11 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         }
         print(f"Using calculated baseline stats for user {user_id}")
     else:
-        # Use default values during baseline period (before day 6 completion)
+        # Use default values during baseline period (before day 1 completion)
         baseline_stats_dict = {
-            "median_target_usage_minutes": 5,  # Default 60 minutes
-            "short_session_threshold_seconds": 300,  # Default 30 seconds
-            "query_interval_seconds": 300  # Default 30 seconds
+            "median_target_usage_minutes": 5,  # Default 5 minutes
+            "short_session_threshold_seconds": 300,  # Default 300 seconds (5 min)
+            "query_interval_seconds": 300  # Default 300 seconds
         }
         print(f"Using default baseline stats for user {user_id} (baseline period or stats not available)")
     
@@ -1457,7 +1478,8 @@ async def root():
         "database": "Neon PostgreSQL",
         "update_schedule": "Daily at 3 AM per user - trains from day 1",
         "training_policy": "Trains Q-learning model daily regardless of baseline/intervention period",
-        "persistence": "All data points stored in PostgreSQL"
+        "persistence": "All data points stored in PostgreSQL",
+        "baseline_period": "2 days (days 0-1)"
     }
 
 # ============================================================================
