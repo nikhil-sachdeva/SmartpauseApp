@@ -4,7 +4,7 @@ Backend API for training and serving Q-Learning models to Android devices
 Daily model updates at 3 AM per user - trains from day 1 regardless of baseline period
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
@@ -18,6 +18,7 @@ import random
 import pickle
 import base64
 import os
+import ast
 
 from database import get_db, init_db
 from db_service import DatabaseService
@@ -82,10 +83,36 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
         response = None
         status_code = 500
         error_message = None
+        response_body = None
         
         try:
             response = await call_next(request)
             status_code = response.status_code
+            
+            # Capture response body for logging
+            if user_id and not request.url.path.startswith("/api/v1/logs"):
+                try:
+                    response_body_bytes = b""
+                    async for chunk in response.body_iterator:
+                        response_body_bytes += chunk
+                    
+                    # Try to parse as JSON
+                    try:
+                        response_body = json.loads(response_body_bytes.decode())
+                    except:
+                        response_body = {"raw": response_body_bytes.decode()[:1000]}  # Limit to 1000 chars
+                    
+                    # Create new response with same body
+                    from starlette.responses import Response
+                    response = Response(
+                        content=response_body_bytes,
+                        status_code=response.status_code,
+                        headers=dict(response.headers),
+                        media_type=response.media_type
+                    )
+                except Exception as e:
+                    print(f"⚠️  Failed to capture response body: {e}")
+                    
         except Exception as e:
             error_message = str(e)
             raise
@@ -99,6 +126,7 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
                         endpoint=request.url.path,
                         method=request.method,
                         status_code=status_code,
+                        response_body=response_body,
                         error_message=error_message,
                         created_at=start_time
                     )
@@ -235,7 +263,7 @@ class EdgeQLearningAgent:
         agent = EdgeQLearningAgent()
         agent.q_table = defaultdict(_default_q_values)
         for k, v in data["q_table"].items():
-            agent.q_table[eval(k)] = v
+            agent.q_table[ast.literal_eval(k)] = v
         agent.epsilon = data["epsilon"]
         agent.training_steps = data["training_steps"]
         return agent
@@ -254,20 +282,6 @@ class EdgeQLearningAgent:
 # CONFIGURATION
 # ============================================================================
 
-SOCIAL_MEDIA_APPS = [
-    "com.facebook.katana", "com.instagram.android", "com.whatsapp",
-    "com.facebook.orca", "com.google.android.youtube", "com.snapchat.android",
-    "com.twitter.android", "com.reddit.frontpage", "com.pinterest",
-    "com.tiktok.android", "com.linkedin.android", "org.telegram.messenger",
-    "com.threads", "com.signal.android", "com.discord", "tv.twitch.android.app",
-    "com.quora.android", "com.imo.android.imoim", "com.viber.voip", "com.tumblr",
-    "com.rumble.video", "com.triller.android", "app.clapper.social",
-    "com.spotify.music", "com.vevo.android", "com.teamx.android",
-    "com.linecorp.line", "com.bsky.app", "com.beatreal.android",
-    "com.xiaohongshu.app", "com.lemon8.android", "com.zigazoo.android",
-    "com.clapper.android", "com.bumble.app", "com.meetup",
-    "com.gab.android", "com.patreon.android", "com.sclub.community"
-]
 
 # EXACTLY matches config from original SmartQuit.ipynb
 REWARD_CONFIG = {
@@ -284,49 +298,76 @@ SESSION_DIVISION_SECONDS = 120
 # HELPER FUNCTIONS
 # ============================================================================
 
-def calculate_baseline_stats(sessions: List[Session]) -> Dict:
+def calculate_baseline_stats(sessions: List[Session], apps_to_monitor: List[str] = None) -> Dict:
     """
     EXACTLY matches original baseline calculation from SmartQuit.ipynb
-    - calculate_median_target_app_usage
-    - calculate_short_session_length (50th percentile)
-    - calculate_75_percentile_length (for query interval)
+    - calculate_median_target_app_usage: median of target app duration per GROUP
+    - calculate_short_session_length: median of target app duration per GROUP (50th percentile)
+    - calculate_75_percentile_length: 75th percentile of all session durations (for query interval)
+    
+    Uses apps_to_monitor from user table to determine target apps.
+    If not provided, uses empty list (no apps monitored).
+    
+    Groups sessions by group_id and calculates median based on grouped target app usage.
     """
-    session_durations = []
-    target_app_times = []
+    if apps_to_monitor is None:
+        apps_to_monitor = []
     
-    for session in sessions:
-        duration_seconds = session.duration_seconds
-        session_durations.append(duration_seconds)
-        
-        if session.app_name in SOCIAL_MEDIA_APPS:
-            target_app_times.append(duration_seconds)
-    
-    if not session_durations:
+    if not sessions:
         return {
-            "median_target_usage_minutes": 5,
-            "short_session_threshold_seconds": 300,
+            "median_target_app_usage_seconds": 300,
+            "median_session_usage_seconds": 300,
             "query_interval_seconds": 300
         }
     
-    session_durations.sort()
-    target_app_times.sort()
+    # Group sessions by group_id
+    groups = defaultdict(list)
+    for session in sessions:
+        groups[session.group_id].append(session)
     
-    # 50th percentile for short session threshold
-    median_duration = session_durations[len(session_durations) // 2]
+    # Calculate target app duration per group AND total duration per group
+    group_target_durations = []
+    group_total_durations = []
+    all_session_durations = []
     
-    # 75th percentile for query interval (matches original)
-    percentile_75_index = int(len(session_durations) * 0.75)
-    percentile_75 = session_durations[percentile_75_index] if percentile_75_index < len(session_durations) else session_durations[-1]
+    for group_id, group_sessions in groups.items():
+        # Sum up target app durations in this group
+        group_target_duration = sum(
+            s.duration_seconds for s in group_sessions 
+            if s.app_name in apps_to_monitor
+        )
+        if group_target_duration > 0:  # Only include groups with target app usage
+            group_target_durations.append(group_target_duration)
+        
+        # Sum up ALL session durations in this group (for median_session_usage)
+        group_total_duration = sum(s.duration_seconds for s in group_sessions)
+        group_total_durations.append(group_total_duration)
+        
+        # Collect all individual session durations for 75th percentile calculation
+        for s in group_sessions:
+            all_session_durations.append(s.duration_seconds)
     
-    # Median target app usage in MINUTES (floor like original)
-    median_target = 0
-    if target_app_times:
-        median_target_seconds = target_app_times[len(target_app_times) // 2]
-        median_target = math.floor(median_target_seconds / 60)
+    # Calculate medians from grouped data
+    if not group_target_durations:
+        median_target_usage = 300  # Default 5 minutes
+    else:
+        group_target_durations.sort()
+        median_target_usage = group_target_durations[len(group_target_durations) // 2]
+    
+    if not group_total_durations:
+        median_session_usage = 300  # Default 5 minutes
+    else:
+        group_total_durations.sort()
+        median_session_usage = group_total_durations[len(group_total_durations) // 2]
+    
+    # 75th percentile for query interval (from all individual sessions)
+    all_session_durations.sort()
+    percentile_75_index = int(len(all_session_durations) * 0.75)
+    percentile_75 = all_session_durations[percentile_75_index] if percentile_75_index < len(all_session_durations) else all_session_durations[-1]
     
     return {
-        "median_target_usage_minutes": median_target,
-        "short_session_threshold_seconds": median_duration,
+        "median_target_app_usage_seconds": median_target_usage,
+        "median_session_usage_seconds": median_session_usage,
         "query_interval_seconds": percentile_75
     }
 
@@ -336,8 +377,15 @@ def get_first_app_in_group(grouped_session: Dict) -> str:
         return grouped_session['sessions'][0]['app_name']
     return None
 
-def extract_state_from_session(session: Dict, first_app: str, is_first_query: bool, baseline_stats: Dict) -> Tuple:
-    """Extract state for action selection during simulation"""
+def extract_state_from_session(session: Dict, first_app: str, is_first_query: bool, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
+    """Extract state for action selection during simulation
+    
+    Uses apps_to_monitor from user table to determine if app is target.
+    If not provided, uses empty list (no apps monitored).
+    """
+    if apps_to_monitor is None:
+        apps_to_monitor = []
+    
     hour = session['start_time'].hour
     if 0 <= hour < 6:
         day_quarter = 0
@@ -349,13 +397,20 @@ def extract_state_from_session(session: Dict, first_app: str, is_first_query: bo
         day_quarter = 3
     
     is_weekday = int(session['start_time'].weekday() < 5)
-    is_target = int(first_app in SOCIAL_MEDIA_APPS)
+    is_target = int(first_app in apps_to_monitor)
     is_short = 1 if is_first_query else 0
     
     return (is_target, is_short, day_quarter, is_weekday)
 
-def extract_state_from_first_app(first_app: str, group: Dict, is_short: int, baseline_stats: Dict) -> Tuple:
-    """Extract state from grouped session for learning"""
+def extract_state_from_first_app(first_app: str, group: Dict, is_short: int, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
+    """Extract state from grouped session for learning
+    
+    Uses apps_to_monitor from user table to determine if app is target.
+    If not provided, uses empty list (no apps monitored).
+    """
+    if apps_to_monitor is None:
+        apps_to_monitor = []
+    
     timestamp = group['start_time']
     
     # Handle timezone-aware timestamps properly
@@ -377,11 +432,11 @@ def extract_state_from_first_app(first_app: str, group: Dict, is_short: int, bas
         day_quarter = 3  # Evening (18-24)
     
     is_weekday = int(timestamp.weekday() < 5)
-    is_target = int(first_app in SOCIAL_MEDIA_APPS)
+    is_target = int(first_app in apps_to_monitor)
     
     return (is_target, is_short, day_quarter, is_weekday)
 
-def calculate_reward_from_actual_data(group: Dict, next_group: Dict, median_target_usage_minutes: float) -> float:
+def calculate_reward_from_actual_data(group: Dict, next_group: Dict, median_target_app_usage_seconds: float) -> float:
     """
     Calculate reward based on ACTUAL user behavior from device.
     Uses real vibration and compliance data.
@@ -402,7 +457,7 @@ def calculate_reward_from_actual_data(group: Dict, next_group: Dict, median_targ
     
     # 3. Long session penalty - penalize if no vibration on long social media session
     if group['action'] == 0 and group['has_social_media']:
-        if group['duration'] > timedelta(minutes=median_target_usage_minutes):
+        if group['duration'] > timedelta(seconds=median_target_app_usage_seconds):
             reward += REWARD_CONFIG['long_session_penalty']
     
     # 4. Session break reward - reward if user took break after vibration
@@ -413,8 +468,15 @@ def calculate_reward_from_actual_data(group: Dict, next_group: Dict, median_targ
     
     return reward
 
-def extract_state(session: Session, is_short: bool, baseline_stats: Dict) -> Tuple:
-    """Extract state features for Q-learning"""
+def extract_state(session: Session, is_short: bool, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
+    """Extract state features for Q-learning
+    
+    Uses apps_to_monitor from user table to determine if app is target.
+    If not provided, uses empty list (no apps monitored).
+    """
+    if apps_to_monitor is None:
+        apps_to_monitor = []
+    
     timestamp = datetime.fromisoformat(session.start_time)
     
     # Time of day quarter (0-3)
@@ -432,15 +494,22 @@ def extract_state(session: Session, is_short: bool, baseline_stats: Dict) -> Tup
     is_weekday = int(timestamp.weekday() < 5)
     
     # Is target app
-    is_target = int(session.app_name in SOCIAL_MEDIA_APPS)
+    is_target = int(session.app_name in apps_to_monitor)
     
     # Is short session
     is_short_session = int(is_short)
     
     return (is_target, is_short_session, day_quarter, is_weekday)
 
-def process_sessions_into_groups(sessions: List[Session], gap_seconds: int = 120) -> List[Dict]:
-    """Group sessions with small time gaps"""
+def process_sessions_into_groups(sessions: List[Session], gap_seconds: int = 120, apps_to_monitor: List[str] = None) -> List[Dict]:
+    """Group sessions with small time gaps
+    
+    Uses apps_to_monitor from user table to calculate target duration.
+    If not provided, uses empty list (no apps monitored).
+    """
+    if apps_to_monitor is None:
+        apps_to_monitor = []
+    
     if not sessions:
         return []
     
@@ -470,7 +539,7 @@ def process_sessions_into_groups(sessions: List[Session], gap_seconds: int = 120
         total_duration = sum(s.duration_seconds for s in group)
         target_duration = sum(
             s.duration_seconds for s in group 
-            if s.app_name in SOCIAL_MEDIA_APPS
+            if s.app_name in apps_to_monitor
         )
         
         group_dicts.append({
@@ -503,8 +572,8 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
     if DatabaseService.user_exists(db, registration.user_id):
         raise HTTPException(status_code=400, detail="User already exists")
     
-    # If no apps specified, use all social media apps by default
-    apps_to_monitor = registration.apps_to_monitor if registration.apps_to_monitor else SOCIAL_MEDIA_APPS
+    # Use provided apps or empty list if not specified
+    apps_to_monitor = registration.apps_to_monitor if registration.apps_to_monitor else []
     
     print(f"  Final apps_to_monitor to save: {apps_to_monitor}")
     
@@ -600,15 +669,20 @@ async def upload_daily_sessions(
             # Skip baseline period - user already has baseline stats
             response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with day {day_number} data."
             response["baseline_stats"] = {
-                "median_target_usage_minutes": existing_baseline_stats.median_target_usage_minutes,
-                "short_session_threshold_seconds": existing_baseline_stats.short_session_threshold_seconds,
+                "median_target_app_usage_seconds": existing_baseline_stats.median_target_app_usage_seconds,
+                "median_session_usage_seconds": existing_baseline_stats.median_session_usage_seconds,
                 "query_interval_seconds": existing_baseline_stats.query_interval_seconds
             }
         elif day_number == 1:
             # Calculate baseline stats after completing 2-day baseline period
             baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
             print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (2-day baseline)")
-            stats = calculate_baseline_stats(baseline_sessions)
+            
+            # Get user's apps_to_monitor for baseline calculation
+            user = DatabaseService.get_user(db, batch.user_id)
+            user_apps = user.apps_to_monitor if user and user.apps_to_monitor else []
+            
+            stats = calculate_baseline_stats(baseline_sessions, user_apps)
             DatabaseService.save_baseline_stats(db, batch.user_id, stats)
             response["baseline_stats"] = stats
             response["message"] = "Baseline period completed (2 days). Model training continues daily."
@@ -677,21 +751,25 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
     if not DatabaseService.user_exists(db, user_id):
         raise HTTPException(status_code=404, detail="User not found")
     
+    # Get user's apps_to_monitor
+    user = DatabaseService.get_user(db, user_id)
+    apps_to_monitor = user.apps_to_monitor if user and user.apps_to_monitor else []
+    
     baseline_stats = DatabaseService.get_baseline_stats(db, user_id)
     
     # Allow access even without baseline stats for viewing purposes
     baseline_data = {}
     if baseline_stats:
         baseline_data = {
-            "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
-            "short_session_threshold_seconds": baseline_stats.short_session_threshold_seconds,
+            "median_target_app_usage_seconds": baseline_stats.median_target_app_usage_seconds,
+            "median_session_usage_seconds": baseline_stats.median_session_usage_seconds,
             "query_interval_seconds": baseline_stats.query_interval_seconds
         }
     else:
         # Provide default values if no baseline stats exist
         baseline_data = {
-            "median_target_usage_minutes": 5,
-            "short_session_threshold_seconds": 300,
+            "median_target_app_usage_seconds": 300,
+            "median_session_usage_seconds": 300,
             "query_interval_seconds": 300
         }
     
@@ -724,7 +802,7 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
         "baseline_stats": baseline_data,
         "sessions": sessions_data,
         "reward_config": REWARD_CONFIG,
-        "social_media_apps": SOCIAL_MEDIA_APPS,
+        "apps_to_monitor": apps_to_monitor,
     }
     
     if format == "binary" and checkpoint and checkpoint.model_binary:
@@ -837,6 +915,7 @@ async def get_api_logs(user_id: str, limit: int = 100, offset: int = 0, db: SQLS
             "endpoint": log.endpoint,
             "method": log.method,
             "status_code": log.status_code,
+            "response_body": log.response_body,
             "error_message": log.error_message,
             "created_at": log.created_at.isoformat() if log.created_at else None,
             "updated_at": log.updated_at.isoformat() if log.updated_at else None
@@ -883,8 +962,8 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
         "total_vibrations": total_vibrations_count,
         "complied_vibrations": sum(1 for s in vibration_sessions if s.user_complied),
         "baseline_stats": {
-            "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
-            "short_session_threshold_seconds": baseline_stats.short_session_threshold_seconds,
+            "median_target_app_usage_seconds": baseline_stats.median_target_app_usage_seconds,
+            "median_session_usage_seconds": baseline_stats.median_session_usage_seconds,
             "query_interval_seconds": baseline_stats.query_interval_seconds
         } if baseline_stats else None,
         "model_stats": {
@@ -1159,8 +1238,8 @@ async def upload_custom_baseline(data: SampleDataUpload, db: SQLSession = Depend
     # Upload baseline stats
     baseline_stats = data.baseline_stats
     stats_dict = {
-        "median_target_usage_minutes": baseline_stats.total_usage_time_minutes // max(baseline_stats.unique_apps, 1),
-        "short_session_threshold_seconds": 300,  # Default
+        "median_target_app_usage_seconds": (baseline_stats.total_usage_time_minutes * 60) // max(baseline_stats.unique_apps, 1),
+        "median_session_usage_seconds": 300,  # Default
         "query_interval_seconds": 300  # Default
     }
     DatabaseService.save_baseline_stats(
@@ -1252,21 +1331,26 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
     Logs all training updates to database.
     Trains daily regardless of baseline/intervention period.
     """
+    # Get user's apps_to_monitor
+    user = DatabaseService.get_user(db, user_id)
+    apps_to_monitor = user.apps_to_monitor if user and user.apps_to_monitor else []
+    print(f"Using apps to monitor: {apps_to_monitor}")
+    
     # Get baseline stats (may be None during baseline period)
     baseline_stats = DatabaseService.get_baseline_stats(db, user_id)
     
     if baseline_stats:
         baseline_stats_dict = {
-            "median_target_usage_minutes": baseline_stats.median_target_usage_minutes,
-            "short_session_threshold_seconds": baseline_stats.short_session_threshold_seconds,
+            "median_target_app_usage_seconds": baseline_stats.median_target_app_usage_seconds,
+            "median_session_usage_seconds": baseline_stats.median_session_usage_seconds,
             "query_interval_seconds": baseline_stats.query_interval_seconds
         }
         print(f"Using calculated baseline stats for user {user_id}")
     else:
         # Use default values during baseline period (before day 1 completion)
         baseline_stats_dict = {
-            "median_target_usage_minutes": 5,  # Default 5 minutes
-            "short_session_threshold_seconds": 300,  # Default 300 seconds (5 min)
+            "median_target_app_usage_seconds": 300,  # Default 300 seconds (5 minutes)
+            "median_session_usage_seconds": 300,  # Default 300 seconds (5 min)
             "query_interval_seconds": 300  # Default 300 seconds
         }
         print(f"Using default baseline stats for user {user_id} (baseline period or stats not available)")
@@ -1285,7 +1369,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         if checkpoint:
             agent.q_table = defaultdict(_default_q_values)
             for k, v in checkpoint.q_table_json.items():
-                agent.q_table[eval(k)] = v
+                agent.q_table[ast.literal_eval(k)] = v
             agent.epsilon = checkpoint.epsilon
             agent.training_steps = checkpoint.training_step
         
@@ -1295,7 +1379,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         try:
             DatabaseService.save_model_checkpoint(
                 db, user_id, agent.training_steps, agent.epsilon,
-                agent.alpha, agent.gamma, dict(agent.q_table)
+                agent.alpha, agent.gamma, {str(k): v for k, v in agent.q_table.items()}
             )
             print(f"✅ Model checkpoint updated for user {user_id} - no sessions but training attempt tracked")
             return {
@@ -1323,7 +1407,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
     if checkpoint:
         agent.q_table = defaultdict(_default_q_values)
         for k, v in checkpoint.q_table_json.items():
-            agent.q_table[eval(k)] = v
+            agent.q_table[ast.literal_eval(k)] = v
         agent.epsilon = checkpoint.epsilon
         agent.training_steps = checkpoint.training_step
     
@@ -1344,7 +1428,6 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         })
     
     # Group sessions by Android-provided group_id
-    from collections import defaultdict
     groups_by_id = defaultdict(list)
     for session in session_dicts:
         groups_by_id[session['group_id']].append(session)
@@ -1364,7 +1447,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
             'group_id': group_id,
             'sessions': sessions_in_group,
             'duration': sum((s['duration'] for s in sessions_in_group), timedelta(0)),
-            'target_app_duration': sum((s['duration'] for s in sessions_in_group if s['app_name'] in SOCIAL_MEDIA_APPS), timedelta(0)),
+            'target_app_duration': sum((s['duration'] for s in sessions_in_group if s['app_name'] in apps_to_monitor), timedelta(0)),
             'action': group_action,
             'start_time': sessions_in_group[0]['start_time'],
             'end_time': sessions_in_group[-1]['end_time'],
@@ -1372,7 +1455,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
             'date': sessions_in_group[0]['date'],
             'total_vibrations': total_vibrations,
             'complied_vibrations': complied_vibrations,
-            'has_social_media': len(set([s['app_name'] for s in sessions_in_group]) & set(SOCIAL_MEDIA_APPS)) > 0
+            'has_social_media': len(set([s['app_name'] for s in sessions_in_group]) & set(apps_to_monitor)) > 0
         }
         grouped_sessions.append(grouped_session)
     
@@ -1393,18 +1476,18 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         
         # Extract states using Android group data directly
         first_app = get_first_app_in_group(group)
-        is_short = 1 if group['duration'] <= timedelta(seconds=baseline_stats_dict["short_session_threshold_seconds"]) else 0
-        state = extract_state_from_first_app(first_app, group, is_short, baseline_stats_dict)
+        is_short = 1 if group['duration'] <= timedelta(seconds=baseline_stats_dict["median_session_usage_seconds"]) else 0
+        state = extract_state_from_first_app(first_app, group, is_short, baseline_stats_dict, apps_to_monitor)
         
         next_first_app = get_first_app_in_group(next_group)
-        next_is_short = 1 if next_group['duration'] <= timedelta(seconds=baseline_stats_dict["short_session_threshold_seconds"]) else 0
-        next_state = extract_state_from_first_app(next_first_app, next_group, next_is_short, baseline_stats_dict)
+        next_is_short = 1 if next_group['duration'] <= timedelta(seconds=baseline_stats_dict["median_session_usage_seconds"]) else 0
+        next_state = extract_state_from_first_app(next_first_app, next_group, next_is_short, baseline_stats_dict, apps_to_monitor)
         
         # Calculate reward using Android group data
         reward = calculate_reward_from_actual_data(
             group,
             next_group,
-            baseline_stats_dict["median_target_usage_minutes"]
+            baseline_stats_dict["median_target_app_usage_seconds"]
         )
         
         # Get Q-values before learning
@@ -1431,7 +1514,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
     try:
         DatabaseService.save_model_checkpoint(
             db, user_id, agent.training_steps, agent.epsilon,
-            agent.alpha, agent.gamma, dict(agent.q_table)
+            agent.alpha, agent.gamma, {str(k): v for k, v in agent.q_table.items()}
         )
         checkpoint_saved = True
         print(f"✅ Model checkpoint saved successfully for user {user_id}")
@@ -1446,7 +1529,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         try:
             DatabaseService.save_model_checkpoint(
                 db, user_id, agent.training_steps, agent.epsilon,
-                agent.alpha, agent.gamma, dict(agent.q_table)
+                agent.alpha, agent.gamma, {str(k): v for k, v in agent.q_table.items()}
             )
             checkpoint_saved = True
             print(f"✅ Updated checkpoint with incremented training steps")

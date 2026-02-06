@@ -699,12 +699,6 @@
                     if (!Array.isArray(appsToMonitor)) {
                         throw new Error('apps_to_monitor must be a JSON array');
                     }
-                    
-                    for (const app of appsToMonitor) {
-                        if (!app.package_name || !app.app_name) {
-                            throw new Error('Each app must have package_name and app_name fields');
-                        }
-                    }
                 } catch (e) {
                     showResponse('registerResponse', `Error parsing apps: ${e.message}`, 400);
                     return;
@@ -735,7 +729,7 @@
             console.log('Registration Payload:', JSON.stringify(payload, null, 2));
 
             try {
-                const response = await fetch(`${API_BASE}/api/v1/user/register`, {
+                const response = await fetch(`${API_BASE}/api/v1/users/register`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)

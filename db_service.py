@@ -46,6 +46,10 @@ class DatabaseService:
             print(f"❌ Invalid date format: {date}. Expected YYYY-MM-DD. Error: {e}")
             raise ValueError(f"Invalid date format: {date}. Expected format YYYY-MM-DD (e.g., 2025-01-15)")
         
+        # Get user's apps_to_monitor for target app checking
+        user = db.query(User).filter(User.id == user_id).first()
+        apps_to_monitor = user.apps_to_monitor if user and user.apps_to_monitor else []
+        
         # Delete existing sessions for this date (in case of re-upload)
         db.query(SessionModel).filter(
             and_(SessionModel.user_id == user_id, SessionModel.date == date)
@@ -100,7 +104,7 @@ class DatabaseService:
                 num_vibrations=session.num_vibrations,
                 user_complied=session.user_complied,
                 group_id=session.group_id,
-                is_target_app=session.app_name in get_social_media_apps()
+                is_target_app=session.app_name in apps_to_monitor
             )
             db.add(db_session)
         
@@ -143,8 +147,8 @@ class DatabaseService:
         # Insert new baseline stats
         baseline = BaselineStats(
             user_id=user_id,
-            median_target_usage_minutes=stats["median_target_usage_minutes"],
-            short_session_threshold_seconds=stats["short_session_threshold_seconds"],
+            median_target_app_usage_seconds=stats["median_target_app_usage_seconds"],
+            median_session_usage_seconds=stats["median_session_usage_seconds"],
             query_interval_seconds=stats["query_interval_seconds"]
         )
         db.add(baseline)
@@ -284,20 +288,3 @@ class DatabaseService:
         day_number = (current_date.date() - user.start_date.date()).days
         return day_number
 
-
-def get_social_media_apps():
-    """Get list of social media apps"""
-    return [
-        "com.facebook.katana", "com.instagram.android", "com.whatsapp",
-        "com.facebook.orca", "com.google.android.youtube", "com.snapchat.android",
-        "com.twitter.android", "com.reddit.frontpage", "com.pinterest",
-        "com.tiktok.android", "com.linkedin.android", "org.telegram.messenger",
-        "com.threads", "com.signal.android", "com.discord", "tv.twitch.android.app",
-        "com.quora.android", "com.imo.android.imoim", "com.viber.voip", "com.tumblr",
-        "com.rumble.video", "com.triller.android", "app.clapper.social",
-        "com.spotify.music", "com.vevo.android", "com.teamx.android",
-        "com.linecorp.line", "com.bsky.app", "com.beatreal.android",
-        "com.xiaohongshu.app", "com.lemon8.android", "com.zigazoo.android",
-        "com.clapper.android", "com.bumble.app", "com.meetup",
-        "com.gab.android", "com.patreon.android", "com.sclub.community"
-    ]

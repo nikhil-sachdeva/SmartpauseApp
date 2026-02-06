@@ -144,8 +144,8 @@ class BaselineStats(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    median_target_usage_minutes = Column(Float)
-    short_session_threshold_seconds = Column(Float)
+    median_target_app_usage_seconds = Column(Float)
+    median_session_usage_seconds = Column(Float)
     query_interval_seconds = Column(Float)
     
     calculated_at = Column(DateTime, default=datetime.utcnow)
