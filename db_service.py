@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_
 from datetime import datetime, timedelta
 import json
-from database import SessionLocal, User, Session as SessionModel, GroupedSession, BaselineStats, ModelCheckpoint, TrainingLog, FeedbackLog
+from database import SessionLocal, User, Session as SessionModel, GroupedSession, BaselineStats, ModelCheckpoint, TrainingLog, FeedbackLog, Query
 
 class DatabaseService:
     """Service layer for all database operations"""
@@ -287,4 +287,77 @@ class DatabaseService:
         
         day_number = (current_date.date() - user.start_date.date()).days
         return day_number
+    
+    @staticmethod
+    def save_queries(db: Session, user_id: str, date: str, queries: list):
+        """Save daily queries to database"""
+        # Validate date format
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as e:
+            print(f"❌ Invalid date format: {date}. Expected YYYY-MM-DD. Error: {e}")
+            raise ValueError(f"Invalid date format: {date}. Expected format YYYY-MM-DD (e.g., 2025-01-15)")
+        
+        # Delete existing queries for this date (in case of re-upload)
+        db.query(Query).filter(
+            and_(Query.user_id == user_id, Query.date == date)
+        ).delete()
+        db.commit()
+        
+        # Insert new queries
+        for i, query in enumerate(queries):
+            timestamp_str = getattr(query, 'timestamp', None)
+            
+            if not timestamp_str:
+                raise ValueError(f"Query {i}: Missing timestamp")
+            
+            try:
+                # Parse timestamp
+                try:
+                    timestamp_dt = datetime.fromisoformat(timestamp_str)
+                except ValueError as e1:
+                    # Fallback: try parsing as naive datetime
+                    try:
+                        timestamp_dt = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S")
+                    except ValueError as e2:
+                        raise ValueError(f"Could not parse timestamp. Error1: {e1}. Error2: {e2}")
+                
+                print(f"   [Query {i}] ✅ Parsed timestamp: {timestamp_dt}")
+                    
+            except ValueError as e:
+                print(f"❌ Invalid datetime format in query {i}: timestamp={timestamp_str}. Error: {e}")
+                raise ValueError(f"Query {i}: Invalid datetime format. Error: {e}")
+            
+            # Validate state is a list
+            if not isinstance(query.state, list):
+                print(f"❌ Query {i}: state is not a list: {type(query.state)} = {query.state}")
+                raise ValueError(f"Query {i}: state must be a list, got {type(query.state)}")
+            
+            db_query = Query(
+                user_id=user_id,
+                group_id=query.group_id,
+                date=date,
+                timestamp=timestamp_dt,
+                current_app=query.current_app,
+                state=json.dumps(query.state),  # Convert list to JSON string
+                action=query.action,
+                compliance=query.compliance
+            )
+            db.add(db_query)
+        
+        db.commit()
+        print(f"💾 Saved {len(queries)} queries for user {user_id} on {date}")
+    
+    @staticmethod
+    def get_queries(db: Session, user_id: str, date: str = None):
+        """Get queries for a user, optionally filtered by date"""
+        query = db.query(Query).filter(Query.user_id == user_id)
+        if date:
+            query = query.filter(Query.date == date)
+        return query.order_by(Query.timestamp.asc()).all()
+    
+    @staticmethod
+    def get_all_queries(db: Session, user_id: str):
+        """Get all queries for a user"""
+        return db.query(Query).filter(Query.user_id == user_id).order_by(Query.timestamp.asc()).all()
 

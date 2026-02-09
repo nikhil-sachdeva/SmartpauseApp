@@ -1,3 +1,5 @@
+<!-- @ts-nocheck -->
+<!-- eslint-disable -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -412,6 +414,12 @@
                         <textarea id="sessionsJson" required placeholder="Paste JSON or click 'Load Sample Data'"></textarea>
                     </div>
 
+                    <div class="form-group field-row-full">
+                        <label>Queries (JSON Format - Optional)</label>
+                        <button type="button" class="sample-btn" onclick="loadSampleQueries()">Load Sample Queries</button>
+                        <textarea id="queriesJson" placeholder="Paste queries JSON or click 'Load Sample Queries' (Optional)"></textarea>
+                    </div>
+
                     <div class="info-box">
                         📝 Expected JSON format: Array of sessions with app_name, package_name, start_time (with timezone), end_time (with timezone), group_id
                     </div>
@@ -613,40 +621,257 @@
 
         function loadSampleSessions() {
             const sample = [
+                // Morning weekday - Instagram
                 {
                     "app_name": "Instagram",
                     "package_name": "com.instagram.android",
-                    "start_time": "2024-01-09T09:00:00-05:00",
-                    "end_time": "2024-01-09T09:15:00-05:00",
+                    "start_time": "2024-01-09T08:30:00-05:00",
+                    "end_time": "2024-01-09T08:45:00-05:00",
                     "duration_seconds": 900,
+                    "num_vibrations": 2,
+                    "user_complied": true,
                     "group_id": 1
                 },
+                // Afternoon weekday - YouTube
                 {
                     "app_name": "YouTube",
                     "package_name": "com.google.android.youtube", 
-                    "start_time": "2024-01-09T10:00:00-05:00",
-                    "end_time": "2024-01-09T10:20:00-05:00",
-                    "duration_seconds": 1200,
+                    "start_time": "2024-01-09T13:00:00-05:00",
+                    "end_time": "2024-01-09T13:10:00-05:00",
+                    "duration_seconds": 600,
+                    "num_vibrations": 0,
+                    "user_complied": false,
                     "group_id": 2
                 },
+                // Evening weekday - Facebook
                 {
                     "app_name": "Facebook",
                     "package_name": "com.facebook.katana",
-                    "start_time": "2024-01-09T14:30:00-05:00",
-                    "end_time": "2024-01-09T14:45:00-05:00",
-                    "duration_seconds": 900,
+                    "start_time": "2024-01-09T19:30:00-05:00",
+                    "end_time": "2024-01-09T19:50:00-05:00",
+                    "duration_seconds": 1200,
+                    "num_vibrations": 3,
+                    "user_complied": false,
                     "group_id": 3
                 },
+                // Night weekday - Chrome
                 {
                     "app_name": "Chrome",
                     "package_name": "com.android.chrome",
-                    "start_time": "2024-01-09T15:00:00-05:00",
-                    "end_time": "2024-01-09T15:10:00-05:00",
-                    "duration_seconds": 600,
+                    "start_time": "2024-01-09T22:00:00-05:00",
+                    "end_time": "2024-01-09T22:15:00-05:00",
+                    "duration_seconds": 900,
+                    "num_vibrations": 0,
+                    "user_complied": false,
                     "group_id": 4
+                },
+                // Weekend morning - TikTok
+                {
+                    "app_name": "TikTok",
+                    "package_name": "com.zhiliaoapp.musically",
+                    "start_time": "2024-01-13T10:00:00-05:00",
+                    "end_time": "2024-01-13T10:20:00-05:00",
+                    "duration_seconds": 1200,
+                    "num_vibrations": 1,
+                    "user_complied": true,
+                    "group_id": 5
+                },
+                // Weekend afternoon - Gmail
+                {
+                    "app_name": "Gmail",
+                    "package_name": "com.google.android.gm",
+                    "start_time": "2024-01-13T15:30:00-05:00",
+                    "end_time": "2024-01-13T15:35:00-05:00",
+                    "duration_seconds": 300,
+                    "num_vibrations": 0,
+                    "user_complied": false,
+                    "group_id": 6
+                },
+                // Early morning weekday - Twitter
+                {
+                    "app_name": "Twitter",
+                    "package_name": "com.twitter.android",
+                    "start_time": "2024-01-10T07:15:00-05:00",
+                    "end_time": "2024-01-10T07:30:00-05:00",
+                    "duration_seconds": 900,
+                    "num_vibrations": 2,
+                    "user_complied": true,
+                    "group_id": 7
+                },
+                // Evening weekday - Snapchat
+                {
+                    "app_name": "Snapchat",
+                    "package_name": "com.snapchat.android",
+                    "start_time": "2024-01-10T20:45:00-05:00",
+                    "end_time": "2024-01-10T21:00:00-05:00",
+                    "duration_seconds": 900,
+                    "num_vibrations": 0,
+                    "user_complied": false,
+                    "group_id": 8
                 }
             ];
             document.getElementById('sessionsJson').value = JSON.stringify(sample, null, 2);
+        }
+
+        function loadSampleQueries() {
+            // State format: [num_vibrations, is_target_app, day_quarter, is_weekday]
+            // day_quarter: 0=morning(6-12), 1=afternoon(12-18), 2=evening(18-24), 3=night(0-6)
+            // is_weekday: 1=Mon-Fri, 0=Sat-Sun
+            const sample = [
+                // Group 1: Morning weekday Instagram - 0→1→2 vibs, complied
+                {
+                    "group_id": 1,
+                    "timestamp": "2024-01-09T08:30:00-05:00",
+                    "current_app": "Instagram",
+                    "state": [0, 1, 0, 1],
+                    "action": 1,
+                    "compliance": 1
+                },
+                {
+                    "group_id": 1,
+                    "timestamp": "2024-01-09T08:35:00-05:00",
+                    "current_app": "Instagram",
+                    "state": [1, 1, 0, 1],
+                    "action": 1,
+                    "compliance": 1
+                },
+                {
+                    "group_id": 1,
+                    "timestamp": "2024-01-09T08:40:00-05:00",
+                    "current_app": "Instagram",
+                    "state": [2, 1, 0, 1],
+                    "action": 0,
+                    "compliance": 1
+                },
+                // Group 2: Afternoon weekday YouTube - no action
+                {
+                    "group_id": 2,
+                    "timestamp": "2024-01-09T13:00:00-05:00",
+                    "current_app": "YouTube",
+                    "state": [0, 1, 1, 1],
+                    "action": 0,
+                    "compliance": 0
+                },
+                {
+                    "group_id": 2,
+                    "timestamp": "2024-01-09T13:05:00-05:00",
+                    "current_app": "YouTube",
+                    "state": [0, 1, 1, 1],
+                    "action": 0,
+                    "compliance": 0
+                },
+                // Group 3: Evening weekday Facebook - 0→1→2→3 vibs, no comply
+                {
+                    "group_id": 3,
+                    "timestamp": "2024-01-09T19:30:00-05:00",
+                    "current_app": "Facebook",
+                    "state": [0, 1, 2, 1],
+                    "action": 1,
+                    "compliance": 0
+                },
+                {
+                    "group_id": 3,
+                    "timestamp": "2024-01-09T19:35:00-05:00",
+                    "current_app": "Facebook",
+                    "state": [1, 1, 2, 1],
+                    "action": 1,
+                    "compliance": 0
+                },
+                {
+                    "group_id": 3,
+                    "timestamp": "2024-01-09T19:40:00-05:00",
+                    "current_app": "Facebook",
+                    "state": [2, 1, 2, 1],
+                    "action": 1,
+                    "compliance": 0
+                },
+                {
+                    "group_id": 3,
+                    "timestamp": "2024-01-09T19:45:00-05:00",
+                    "current_app": "Facebook",
+                    "state": [3, 1, 2, 1],
+                    "action": 0,
+                    "compliance": 0
+                },
+                // Group 4: Night weekday Chrome - non-target
+                {
+                    "group_id": 4,
+                    "timestamp": "2024-01-09T22:00:00-05:00",
+                    "current_app": "Chrome",
+                    "state": [0, 0, 3, 1],
+                    "action": 0,
+                    "compliance": 0
+                },
+                // Group 5: Weekend morning TikTok - 0→1 vib, complied
+                {
+                    "group_id": 5,
+                    "timestamp": "2024-01-13T10:00:00-05:00",
+                    "current_app": "TikTok",
+                    "state": [0, 1, 0, 0],
+                    "action": 1,
+                    "compliance": 1
+                },
+                {
+                    "group_id": 5,
+                    "timestamp": "2024-01-13T10:10:00-05:00",
+                    "current_app": "TikTok",
+                    "state": [1, 1, 0, 0],
+                    "action": 0,
+                    "compliance": 1
+                },
+                // Group 6: Weekend afternoon Gmail - non-target
+                {
+                    "group_id": 6,
+                    "timestamp": "2024-01-13T15:30:00-05:00",
+                    "current_app": "Gmail",
+                    "state": [0, 0, 1, 0],
+                    "action": 0,
+                    "compliance": 0
+                },
+                // Group 7: Morning weekday Twitter - 0→1→2 vibs, complied
+                {
+                    "group_id": 7,
+                    "timestamp": "2024-01-10T07:15:00-05:00",
+                    "current_app": "Twitter",
+                    "state": [0, 1, 0, 1],
+                    "action": 1,
+                    "compliance": 1
+                },
+                {
+                    "group_id": 7,
+                    "timestamp": "2024-01-10T07:22:00-05:00",
+                    "current_app": "Twitter",
+                    "state": [1, 1, 0, 1],
+                    "action": 1,
+                    "compliance": 1
+                },
+                {
+                    "group_id": 7,
+                    "timestamp": "2024-01-10T07:28:00-05:00",
+                    "current_app": "Twitter",
+                    "state": [2, 1, 0, 1],
+                    "action": 0,
+                    "compliance": 1
+                },
+                // Group 8: Evening weekday Snapchat - no action
+                {
+                    "group_id": 8,
+                    "timestamp": "2024-01-10T20:45:00-05:00",
+                    "current_app": "Snapchat",
+                    "state": [0, 1, 2, 1],
+                    "action": 0,
+                    "compliance": 0
+                },
+                {
+                    "group_id": 8,
+                    "timestamp": "2024-01-10T20:52:00-05:00",
+                    "current_app": "Snapchat",
+                    "state": [0, 1, 2, 1],
+                    "action": 0,
+                    "compliance": 0
+                }
+            ];
+            document.getElementById('queriesJson').value = JSON.stringify(sample, null, 2);
         }
 
         function showResponse(elementId, data, status) {
@@ -748,15 +973,27 @@
             const userId = document.getElementById('uploadUserId').value;
             const date = document.getElementById('uploadDate').value;
             const sessionsStr = document.getElementById('sessionsJson').value;
+            const queriesStr = document.getElementById('queriesJson').value.trim();
 
             try {
                 const sessions = JSON.parse(sessionsStr);
-
+                
                 const payload = {
                     user_id: userId,
                     date: date,
                     sessions: sessions
                 };
+
+                // Add queries if provided
+                if (queriesStr) {
+                    try {
+                        const queries = JSON.parse(queriesStr);
+                        payload.queries = queries;
+                    } catch (e) {
+                        showResponse('uploadResponse', `Error parsing queries: ${e.message}`, 400);
+                        return;
+                    }
+                }
 
                 const response = await fetch(`${API_BASE}/api/v1/sessions/upload`, {
                     method: 'POST',

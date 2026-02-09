@@ -174,9 +174,18 @@ class Session(BaseModel):
     user_complied: bool = False  # Did user stop using app after vibration?
     group_id: int = 1  # Group ID for session grouping (defaults to 1)
 
+class Query(BaseModel):
+    group_id: int
+    timestamp: str  # ISO format
+    current_app: str
+    state: List[int]  # JSON array of state values
+    action: int  # 0 or 1
+    compliance: int  # 0 or 1
+
 class DailyUpload(BaseModel):
     user_id: str
     sessions: List[Session]
+    queries: Optional[List[Query]] = []  # List of queries from device
     date: str  # The date these sessions are from (YYYY-MM-DD format)
 
 class UserRegistration(BaseModel):
@@ -246,7 +255,7 @@ class EdgeQLearningAgent:
     def to_dict(self) -> Dict:
         """Convert to JSON-serializable format for device"""
         return {
-            "q_table": {str(k): v for k, v in dict(self.q_table).items()},
+            "q_table": {json.dumps(list(k)): v for k, v in dict(self.q_table).items()},
             "epsilon": self.epsilon,
             "training_steps": self.training_steps,
             "alpha": self.alpha,
@@ -263,15 +272,79 @@ class EdgeQLearningAgent:
         agent = EdgeQLearningAgent()
         agent.q_table = defaultdict(_default_q_values)
         for k, v in data["q_table"].items():
-            agent.q_table[ast.literal_eval(k)] = v
+            # Parse the key back to tuple - handle JSON array format
+            try:
+                # Try parsing as JSON array first (safer)
+                key_list = json.loads(k) if k.startswith('[') else ast.literal_eval(k)
+                if not isinstance(key_list, (list, tuple)):
+                    continue
+                agent.q_table[tuple(key_list)] = v
+            except (ValueError, SyntaxError, TypeError) as e:
+                print(f"Warning: Could not parse q_table key: {k}, error: {e}")
+                continue
         agent.epsilon = data["epsilon"]
         agent.training_steps = data["training_steps"]
+        agent.alpha = data.get("alpha", 0.1)
+        agent.gamma = data.get("gamma", 0.95)
         return agent
     
     @staticmethod
     def from_compact_binary(data: str):
         """Reconstruct from binary"""
         return pickle.loads(base64.b64decode(data))
+    
+    @staticmethod
+    def load_from_checkpoint(checkpoint):
+        """
+        Load agent from database checkpoint.
+        This is the ONLY method that should be used to reconstruct an agent from the database.
+        Ensures Q-table is properly loaded with all learned values.
+        """
+        agent = EdgeQLearningAgent()
+        
+        if not checkpoint:
+            print("🆕 No checkpoint provided - starting with empty Q-table")
+            return agent
+        
+        # Load Q-table from checkpoint
+        agent.q_table = defaultdict(_default_q_values)
+        loaded_keys = 0
+        failed_keys = 0
+        
+        print(f"📥 Loading checkpoint with {len(checkpoint.q_table_json) if checkpoint.q_table_json else 0} states")
+        
+        if checkpoint.q_table_json:
+            for k, v in checkpoint.q_table_json.items():
+                try:
+                    # Parse key as JSON array: "[0, 1, 1, 1]" -> [0, 1, 1, 1]
+                    key_list = json.loads(k) if k.startswith('[') else ast.literal_eval(k)
+                    
+                    # Validate key is iterable
+                    if not isinstance(key_list, (list, tuple)):
+                        print(f"⚠️  Skipping invalid key type {type(key_list)}: {key_list}")
+                        failed_keys += 1
+                        continue
+                    
+                    # Store in Q-table
+                    state_tuple = tuple(key_list)
+                    agent.q_table[state_tuple] = v
+                    loaded_keys += 1
+                    
+                except (ValueError, SyntaxError, TypeError, json.JSONDecodeError) as e:
+                    print(f"⚠️  Failed to parse Q-table key '{k}': {e}")
+                    failed_keys += 1
+                    continue
+        
+        # Load hyperparameters
+        agent.epsilon = checkpoint.epsilon
+        agent.alpha = checkpoint.alpha
+        agent.gamma = checkpoint.gamma
+        agent.training_steps = checkpoint.training_step
+        
+        print(f"✅ Loaded agent: {loaded_keys} states, {failed_keys} failed")
+        print(f"   Hyperparameters: ε={agent.epsilon:.4f}, α={agent.alpha}, γ={agent.gamma}, steps={agent.training_steps}")
+        
+        return agent
 
 # ============================================================================
 # DATABASE STORAGE (Using Neon PostgreSQL via SQLAlchemy)
@@ -377,33 +450,10 @@ def get_first_app_in_group(grouped_session: Dict) -> str:
         return grouped_session['sessions'][0]['app_name']
     return None
 
-def extract_state_from_session(session: Dict, first_app: str, is_first_query: bool, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
-    """Extract state for action selection during simulation
-    
-    Uses apps_to_monitor from user table to determine if app is target.
-    If not provided, uses empty list (no apps monitored).
-    """
-    if apps_to_monitor is None:
-        apps_to_monitor = []
-    
-    hour = session['start_time'].hour
-    if 0 <= hour < 6:
-        day_quarter = 0
-    elif 6 <= hour < 12:
-        day_quarter = 1
-    elif 12 <= hour < 18:
-        day_quarter = 2
-    else:
-        day_quarter = 3
-    
-    is_weekday = int(session['start_time'].weekday() < 5)
-    is_target = int(first_app in apps_to_monitor)
-    is_short = 1 if is_first_query else 0
-    
-    return (is_target, is_short, day_quarter, is_weekday)
-
-def extract_state_from_first_app(first_app: str, group: Dict, is_short: int, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
+def extract_state_from_first_app(first_app: str, group: Dict, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
     """Extract state from grouped session for learning
+    
+    State: (num_vibrations, is_target_app, day_quarter, is_weekday)
     
     Uses apps_to_monitor from user table to determine if app is target.
     If not provided, uses empty list (no apps monitored).
@@ -432,44 +482,32 @@ def extract_state_from_first_app(first_app: str, group: Dict, is_short: int, bas
         day_quarter = 3  # Evening (18-24)
     
     is_weekday = int(timestamp.weekday() < 5)
-    is_target = int(first_app in apps_to_monitor)
+    is_target_app = int(first_app in apps_to_monitor)
+    num_vibrations = group.get('total_vibrations', 0)
     
-    return (is_target, is_short, day_quarter, is_weekday)
+    return (num_vibrations, is_target_app, day_quarter, is_weekday)
 
-def calculate_reward_from_actual_data(group: Dict, next_group: Dict, median_target_app_usage_seconds: float) -> float:
+def calculate_reward(action: int, compliance: int) -> float:
     """
-    Calculate reward based on ACTUAL user behavior from device.
-    Uses real vibration and compliance data.
+    Calculate reward based on action and compliance.
     
-    Reward components:
-    1. Vibration penalty: -40 per vibration
-    2. Compliance reward: +60 per complied vibration
-    3. Session break reward: +40 if user took 2+ min break after vibration
-    4. Long session penalty: -40 if no action on long social media session
+    Simplified reward logic:
+    - action == 0 (no vibration): reward = 0
+    - action == 1 (vibration):
+        - compliance == 1 (user complied): reward = 1
+        - compliance == 0 (user did not comply): reward = -1
     """
-    reward = 0.0
-    
-    # 1. Vibration penalty - penalize each vibration
-    reward += group['total_vibrations'] * REWARD_CONFIG['vibration_penalty']
-    
-    # 2. Compliance reward - reward when user actually complied
-    reward += group['complied_vibrations'] * REWARD_CONFIG['vibration_compliance_reward']
-    
-    # 3. Long session penalty - penalize if no vibration on long social media session
-    if group['action'] == 0 and group['has_social_media']:
-        if group['duration'] > timedelta(seconds=median_target_app_usage_seconds):
-            reward += REWARD_CONFIG['long_session_penalty']
-    
-    # 4. Session break reward - reward if user took break after vibration
-    if group['action'] == 1 and next_group:
-        break_duration = (next_group['start_time'] - group['end_time']).total_seconds() / 60.0
-        if break_duration >= 2.0:  # 2 minutes break
-            reward += REWARD_CONFIG['session_break_reward']
-    
-    return reward
+    if action == 0:
+        return 0.0
+    elif action == 1:
+        return 1.0 if compliance == 1 else -1.0
+    else:
+        return 0.0
 
-def extract_state(session: Session, is_short: bool, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
+def extract_state(session: Session, num_vibrations: int, baseline_stats: Dict, apps_to_monitor: List[str] = None) -> Tuple:
     """Extract state features for Q-learning
+    
+    State: (num_vibrations, is_target_app, day_quarter, is_weekday)
     
     Uses apps_to_monitor from user table to determine if app is target.
     If not provided, uses empty list (no apps monitored).
@@ -494,12 +532,9 @@ def extract_state(session: Session, is_short: bool, baseline_stats: Dict, apps_t
     is_weekday = int(timestamp.weekday() < 5)
     
     # Is target app
-    is_target = int(session.app_name in apps_to_monitor)
+    is_target_app = int(session.app_name in apps_to_monitor)
     
-    # Is short session
-    is_short_session = int(is_short)
-    
-    return (is_target, is_short_session, day_quarter, is_weekday)
+    return (num_vibrations, is_target_app, day_quarter, is_weekday)
 
 def process_sessions_into_groups(sessions: List[Session], gap_seconds: int = 120, apps_to_monitor: List[str] = None) -> List[Dict]:
     """Group sessions with small time gaps
@@ -656,9 +691,21 @@ async def upload_daily_sessions(
         # Save sessions to database
         DatabaseService.save_sessions(db, batch.user_id, batch.date, batch.sessions)
         
+        # Save queries to database (if provided)
+        queries_count = 0
+        if batch.queries and len(batch.queries) > 0:
+            try:
+                DatabaseService.save_queries(db, batch.user_id, batch.date, batch.queries)
+                queries_count = len(batch.queries)
+                print(f"✅ Saved {queries_count} queries for user {batch.user_id}")
+            except Exception as e:
+                print(f"⚠️ Failed to save queries: {e}")
+                # Don't fail the entire upload if queries fail
+        
         response = {
             "status": "received",
             "sessions_count": len(batch.sessions),
+            "queries_count": queries_count,
             "day_number": day_number,
             "date": batch.date,
             "baseline_exists": baseline_exists
@@ -695,7 +742,7 @@ async def upload_daily_sessions(
             
             # Run training synchronously to ensure model is updated before response
             try:
-                training_result = await train_model_daily(batch.user_id, batch.date, db)
+                training_result = await train_model_daily(batch.user_id, batch.date, batch.queries if batch.queries else [], db)
                 print(f"✅ Training completed for user {batch.user_id}: {training_result}")
                 
                 # Add training results to response for confirmation
@@ -980,6 +1027,50 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
             }
             for log in training_logs[:10]
         ]
+    }
+
+@app.get("/api/v1/queries/{user_id}")
+async def get_queries(user_id: str, date: Optional[str] = None, limit: int = 100, offset: int = 0, db: SQLSession = Depends(get_db)):
+    """
+    Get query logs for a user
+    Shows all queries made by the device with their state, action, and compliance
+    """
+    if not DatabaseService.user_exists(db, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get queries (optionally filtered by date)
+    if date:
+        queries = DatabaseService.get_queries(db, user_id, date)
+    else:
+        queries = DatabaseService.get_all_queries(db, user_id)
+    
+    # Apply pagination
+    total_queries = len(queries)
+    queries = queries[offset:offset + limit]
+    
+    # Format queries for response
+    query_list = []
+    for query in queries:
+        query_list.append({
+            "id": query.id,
+            "group_id": query.group_id,
+            "date": query.date,
+            "timestamp": query.timestamp.isoformat() if query.timestamp else None,
+            "current_app": query.current_app,
+            "state": query.state,
+            "action": query.action,
+            "compliance": query.compliance,
+            "created_at": query.created_at.isoformat() if query.created_at else None
+        })
+    
+    return {
+        "user_id": user_id,
+        "total_queries": total_queries,
+        "returned": len(query_list),
+        "offset": offset,
+        "limit": limit,
+        "date_filter": date,
+        "queries": query_list
     }
 
 def generate_realistic_qtable(user_id: str) -> dict:
@@ -1324,54 +1415,22 @@ async def upload_custom_baseline(data: SampleDataUpload, db: SQLSession = Depend
 # BACKGROUND TRAINING TASK (RUNS DAILY)
 # ============================================================================
 
-async def train_model_daily(user_id: str, date: str, db: SQLSession):
+async def train_model_daily(user_id: str, date: str, queries: List[Query], db: SQLSession):
     """
-    Background task to train the model with today's uploaded sessions.
-    Uses ACTUAL vibration and compliance data from device.
+    Background task to train the model with today's uploaded queries.
+    Uses ACTUAL action and compliance data from device queries.
     Logs all training updates to database.
     Trains daily regardless of baseline/intervention period.
     """
-    # Get user's apps_to_monitor
-    user = DatabaseService.get_user(db, user_id)
-    apps_to_monitor = user.apps_to_monitor if user and user.apps_to_monitor else []
-    print(f"Using apps to monitor: {apps_to_monitor}")
+    print(f"Training model for user {user_id} from date {date}")
     
-    # Get baseline stats (may be None during baseline period)
-    baseline_stats = DatabaseService.get_baseline_stats(db, user_id)
-    
-    if baseline_stats:
-        baseline_stats_dict = {
-            "median_target_app_usage_seconds": baseline_stats.median_target_app_usage_seconds,
-            "median_session_usage_seconds": baseline_stats.median_session_usage_seconds,
-            "query_interval_seconds": baseline_stats.query_interval_seconds
-        }
-        print(f"Using calculated baseline stats for user {user_id}")
-    else:
-        # Use default values during baseline period (before day 1 completion)
-        baseline_stats_dict = {
-            "median_target_app_usage_seconds": 300,  # Default 300 seconds (5 minutes)
-            "median_session_usage_seconds": 300,  # Default 300 seconds (5 min)
-            "query_interval_seconds": 300  # Default 300 seconds
-        }
-        print(f"Using default baseline stats for user {user_id} (baseline period or stats not available)")
-    
-    print(f"Baseline stats: {baseline_stats_dict}")
-    
-    # Get today's sessions from database
-    today_sessions = DatabaseService.get_sessions_by_date(db, user_id, date)
-    
-    if not today_sessions:
-        print(f"No sessions for user {user_id} on date {date}")
+    # Use queries passed from upload endpoint
+    if not queries:
+        print(f"No queries for user {user_id} on date {date}")
         
-        # Even with no sessions, update the checkpoint to track training attempt
+        # Even with no queries, load latest model and track training attempt
         checkpoint = DatabaseService.get_latest_model(db, user_id)
-        agent = EdgeQLearningAgent()
-        if checkpoint:
-            agent.q_table = defaultdict(_default_q_values)
-            for k, v in checkpoint.q_table_json.items():
-                agent.q_table[ast.literal_eval(k)] = v
-            agent.epsilon = checkpoint.epsilon
-            agent.training_steps = checkpoint.training_step
+        agent = EdgeQLearningAgent.load_from_checkpoint(checkpoint)
         
         # Increment training steps to track attempt even with no data
         agent.training_steps += 1
@@ -1379,145 +1438,116 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         try:
             DatabaseService.save_model_checkpoint(
                 db, user_id, agent.training_steps, agent.epsilon,
-                agent.alpha, agent.gamma, {str(k): v for k, v in agent.q_table.items()}
+                agent.alpha, agent.gamma, {json.dumps(list(k)): v for k, v in agent.q_table.items()}
             )
-            print(f"✅ Model checkpoint updated for user {user_id} - no sessions but training attempt tracked")
+            print(f"✅ Model checkpoint updated for user {user_id} - no queries but training attempt tracked")
             return {
                 "learned_transitions": 0,
                 "q_table_size": len(agent.q_table),
                 "training_steps": agent.training_steps,
                 "checkpoint_saved": True,
-                "message": "No sessions found, but training attempt tracked"
+                "message": "No queries found, but training attempt tracked"
             }
         except Exception as e:
-            print(f"❌ Error saving checkpoint for no-session case: {e}")
+            print(f"❌ Error saving checkpoint for no-query case: {e}")
             return {
                 "learned_transitions": 0,
                 "q_table_size": len(agent.q_table) if agent.q_table else 0,
                 "training_steps": agent.training_steps,
                 "checkpoint_saved": False,
-                "message": "No sessions found, checkpoint save failed"
+                "message": "No queries found, checkpoint save failed"
             }
     
-    print(f"Training model for user {user_id} with {len(today_sessions)} sessions from {date}")
+    print(f"Training model for user {user_id} with {len(queries)} queries from {date}")
     
-    # Reconstruct agent from latest checkpoint or create new
+    # Load agent from latest checkpoint using centralized loading method
     checkpoint = DatabaseService.get_latest_model(db, user_id)
-    agent = EdgeQLearningAgent()
-    if checkpoint:
-        agent.q_table = defaultdict(_default_q_values)
-        for k, v in checkpoint.q_table_json.items():
-            agent.q_table[ast.literal_eval(k)] = v
-        agent.epsilon = checkpoint.epsilon
-        agent.training_steps = checkpoint.training_step
+    agent = EdgeQLearningAgent.load_from_checkpoint(checkpoint)
     
-    # Convert database sessions to dict format
-    session_dicts = []
-    for s in today_sessions:
-        session_dicts.append({
-            'app_name': s.app_name,
-            'start_time': s.start_time,
-            'end_time': s.end_time,
-            'duration': timedelta(seconds=s.duration_seconds),
-            'date': s.date,
-            'num_vibrations': s.num_vibrations,
-            'user_complied': s.user_complied,
-            'action': 1 if s.num_vibrations > 0 else 0,
-            'complied': 1 if s.user_complied else 0,
-            'group_id': s.group_id  # Use Android-provided group ID
-        })
+    # Sort queries by group_id first, then timestamp for proper Markov sequential learning
+    # This ensures we learn from consecutive state transitions within the same session context
+    # Handle both string timestamps (from Pydantic) and datetime objects (from DB)
+    def get_sort_key(q):
+        timestamp = datetime.fromisoformat(q.timestamp) if isinstance(q.timestamp, str) else q.timestamp
+        return (q.group_id, timestamp)
     
-    # Group sessions by Android-provided group_id
-    groups_by_id = defaultdict(list)
-    for session in session_dicts:
-        groups_by_id[session['group_id']].append(session)
+    sorted_queries = sorted(queries, key=get_sort_key)
+    print(f"Sorted {len(sorted_queries)} queries for training (by group_id, then timestamp)")
     
-    # Create grouped sessions using Android group IDs
-    grouped_sessions = []
-    for group_id, sessions_in_group in groups_by_id.items():
-        # Sort sessions in group by start time
-        sessions_in_group.sort(key=lambda x: x['start_time'])
-        
-        # Create grouped session data
-        total_vibrations = sum(s['num_vibrations'] for s in sessions_in_group)
-        complied_vibrations = sum(1 for s in sessions_in_group if s['user_complied'])
-        group_action = 1 if any(s['num_vibrations'] > 0 for s in sessions_in_group) else 0
-        
-        grouped_session = {
-            'group_id': group_id,
-            'sessions': sessions_in_group,
-            'duration': sum((s['duration'] for s in sessions_in_group), timedelta(0)),
-            'target_app_duration': sum((s['duration'] for s in sessions_in_group if s['app_name'] in apps_to_monitor), timedelta(0)),
-            'action': group_action,
-            'start_time': sessions_in_group[0]['start_time'],
-            'end_time': sessions_in_group[-1]['end_time'],
-            'app_ids': [s['app_name'] for s in sessions_in_group],
-            'date': sessions_in_group[0]['date'],
-            'total_vibrations': total_vibrations,
-            'complied_vibrations': complied_vibrations,
-            'has_social_media': len(set([s['app_name'] for s in sessions_in_group]) & set(apps_to_monitor)) > 0
-        }
-        grouped_sessions.append(grouped_session)
+    # Log query distribution by group for visibility
+    from collections import Counter
+    group_counts = Counter(q.group_id for q in sorted_queries)
+    print(f"Query distribution: {dict(group_counts)}")
     
-    # Sort groups by start time for sequential learning
-    grouped_sessions.sort(key=lambda x: x['start_time'])
-    
-    print(f"Created {len(grouped_sessions)} grouped sessions for learning")
-    
-    # Learning loop
+    # Learning loop - process each query with its next query
     learned_count = 0
     initial_training_steps = agent.training_steps
     
-    for i, group in enumerate(grouped_sessions):
-        if i + 1 >= len(grouped_sessions):
+    for i, query in enumerate(sorted_queries):
+        if i + 1 >= len(sorted_queries):
             break
         
-        next_group = grouped_sessions[i + 1]
+        next_query = sorted_queries[i + 1]
+        print(f"\n=== Processing query pair {i} ===")
+        print(f"About to enter try block")
         
-        # Extract states using Android group data directly
-        first_app = get_first_app_in_group(group)
-        is_short = 1 if group['duration'] <= timedelta(seconds=baseline_stats_dict["median_session_usage_seconds"]) else 0
-        state = extract_state_from_first_app(first_app, group, is_short, baseline_stats_dict, apps_to_monitor)
+        # Extract state and next_state from queries
+        # Handle both string (from DB) and list (from Pydantic) formats  
+        # query.state is already a list when passed from upload endpoint
+        if isinstance(query.state, list):
+            state = tuple(query.state)
+        elif isinstance(query.state, str):
+            state = tuple(json.loads(query.state))
+        else:
+            print(f"Error: Unexpected type for query.state: {type(query.state)}")
+            continue
+            
+        if isinstance(next_query.state, list):
+            next_state = tuple(next_query.state)
+        elif isinstance(next_query.state, str):
+            next_state = tuple(json.loads(next_query.state))
+        else:
+            print(f"Error: Unexpected type for next_query.state: {type(next_query.state)}")
+            continue
         
-        next_first_app = get_first_app_in_group(next_group)
-        next_is_short = 1 if next_group['duration'] <= timedelta(seconds=baseline_stats_dict["median_session_usage_seconds"]) else 0
-        next_state = extract_state_from_first_app(next_first_app, next_group, next_is_short, baseline_stats_dict, apps_to_monitor)
+        # Get action and compliance from query
+        action = query.action
+        compliance = query.compliance
         
-        # Calculate reward using Android group data
-        reward = calculate_reward_from_actual_data(
-            group,
-            next_group,
-            baseline_stats_dict["median_target_app_usage_seconds"]
-        )
+        # Calculate reward using simplified logic
+        reward = calculate_reward(action, compliance)
         
         # Get Q-values before learning
-        q_before = agent.q_table[state][group['action']]
+        q_before = agent.q_table[state][action]
         
         # Learn (this will increment agent.training_steps internally)
-        agent.learn(state, next_state, group['action'], reward)
+        agent.learn(state, next_state, action, reward)
         
         # Get Q-values after learning
-        q_after = agent.q_table[state][group['action']]
+        q_after = agent.q_table[state][action]
         
         # LOG TO DATABASE
         DatabaseService.log_training(
-            db, user_id, date, state, next_state, group['action'], reward,
+            db, user_id, date, state, next_state, action, reward,
             q_before, q_after, agent.alpha, agent.gamma
         )
         
         learned_count += 1
-        print(f"Learned: state={state}, action={group['action']}, reward={reward:.2f}, next_state={next_state}")
-    
+        print(f"Learned: state={state}, action={action}, compliance={compliance}, reward={reward:.2f}, next_state={next_state}")
+
+        
     # ALWAYS save model checkpoint after training attempt (even if no learning occurred)
     # This ensures the model is updated every time the upload endpoint is called
     checkpoint_saved = False
+    print(f"\n💾 Saving checkpoint: {len(agent.q_table)} states, training_step={agent.training_steps}, ε={agent.epsilon:.4f}")
     try:
         DatabaseService.save_model_checkpoint(
             db, user_id, agent.training_steps, agent.epsilon,
-            agent.alpha, agent.gamma, {str(k): v for k, v in agent.q_table.items()}
+            agent.alpha, agent.gamma, {json.dumps(list(k)): v for k, v in agent.q_table.items()}
         )
         checkpoint_saved = True
         print(f"✅ Model checkpoint saved successfully for user {user_id}")
+        print(f"   Q-table size: {len(agent.q_table)} states")
     except Exception as e:
         print(f"❌ Error saving model checkpoint for user {user_id}: {e}")
     
@@ -1529,7 +1559,7 @@ async def train_model_daily(user_id: str, date: str, db: SQLSession):
         try:
             DatabaseService.save_model_checkpoint(
                 db, user_id, agent.training_steps, agent.epsilon,
-                agent.alpha, agent.gamma, {str(k): v for k, v in agent.q_table.items()}
+                agent.alpha, agent.gamma, {json.dumps(list(k)): v for k, v in agent.q_table.items()}
             )
             checkpoint_saved = True
             print(f"✅ Updated checkpoint with incremented training steps")

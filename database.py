@@ -76,6 +76,7 @@ class User(Base):
     model_checkpoints = relationship("ModelCheckpoint", back_populates="user", cascade="all, delete-orphan")
     training_logs = relationship("TrainingLog", back_populates="user", cascade="all, delete-orphan")
     api_logs = relationship("APILog", back_populates="user", cascade="all, delete-orphan")
+    queries = relationship("Query", back_populates="user", cascade="all, delete-orphan")
 
 
 class Session(Base):
@@ -240,6 +241,30 @@ class APILog(Base):
     
     # Relationships
     user = relationship("User", back_populates="api_logs")
+
+
+class Query(Base):
+    """Query logs from device - tracks each intervention decision and compliance"""
+    __tablename__ = "queries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), index=True)
+    
+    # Query details
+    group_id = Column(Integer, index=True)
+    date = Column(String, index=True)  # YYYY-MM-DD
+    timestamp = Column(DateTime, index=True)
+    current_app = Column(String, index=True)
+    state = Column(String)  # State tuple as JSON string (e.g., "[0, 1, 1, 1]")
+    action = Column(Integer)  # 0 or 1 (binary)
+    compliance = Column(Integer)  # 0 or 1 (binary)
+    
+    # Timing
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="queries")
 
 
 # ============================================================================
