@@ -8,6 +8,87 @@ from datetime import datetime, timedelta
 import json
 from database import SessionLocal, User, Session as SessionModel, GroupedSession, BaselineStats, ModelCheckpoint, TrainingLog, FeedbackLog, Query
 
+# ============================================================================
+# Q-TABLE STATE SPACE DEFINITION
+# ============================================================================
+# State: (num_vibrations, is_target_app, day_quarter, is_weekday)
+# - num_vibrations: 0-5 (capped at 5)
+# - is_target_app: 0 (not target), 1 (target app)
+# - day_quarter: 0 (night 0-6), 1 (morning 6-12), 2 (afternoon 12-18), 3 (evening 18-24)
+# - is_weekday: 0 (weekend), 1 (weekday)
+
+STATE_SPACE = {
+    'num_vibrations_range': range(0, 6),      # 0, 1, 2, 3, 4, 5
+    'is_target_app_range': [0, 1],            # 0 or 1
+    'day_quarter_range': range(0, 4),         # 0, 1, 2, 3
+    'is_weekday_range': [0, 1]                # 0 or 1
+}
+
+# Total states: 6 * 2 * 4 * 2 = 96
+TOTAL_Q_TABLE_STATES = 96
+MAX_NUM_VIBRATIONS = 5  # Cap for num_vibrations state component
+
+
+def generate_complete_qtable() -> dict:
+    """
+    Generate a complete Q-table with all possible states initialized to [0.0, 0.0].
+    This ensures consistent Q-table size across all model checkpoints.
+    
+    Returns:
+        Dict with 96 states, each with format: "[num_vib, is_target, day_q, is_weekday]": [0.0, 0.0]
+    """
+    qtable = {}
+    for num_vibrations in STATE_SPACE['num_vibrations_range']:
+        for is_target_app in STATE_SPACE['is_target_app_range']:
+            for day_quarter in STATE_SPACE['day_quarter_range']:
+                for is_weekday in STATE_SPACE['is_weekday_range']:
+                    state = (num_vibrations, is_target_app, day_quarter, is_weekday)
+                    qtable[json.dumps(list(state))] = [0.0, 0.0]
+    return qtable
+
+
+def ensure_complete_qtable(qtable: dict) -> dict:
+    """
+    Ensure a Q-table has all possible states, filling missing ones with [0.0, 0.0].
+    This function is called before saving any Q-table to the database.
+    
+    Args:
+        qtable: Existing Q-table (may have missing states)
+    
+    Returns:
+        Complete Q-table with all 96 states
+    """
+    # Start with complete Q-table (all zeros)
+    complete = generate_complete_qtable()
+    
+    # Update with existing values (preserving learned Q-values)
+    if qtable:
+        for key, value in qtable.items():
+            # Normalize key format to ensure consistency
+            try:
+                if isinstance(key, str):
+                    # Parse the state from string format
+                    parsed = json.loads(key) if key.startswith('[') else [int(x) for x in key.split('_')]
+                    state_tuple = tuple(parsed)
+                else:
+                    state_tuple = tuple(key)
+                
+                # Cap num_vibrations if needed
+                if len(state_tuple) == 4:
+                    num_vib = min(state_tuple[0], MAX_NUM_VIBRATIONS)
+                    normalized_state = (num_vib, state_tuple[1], state_tuple[2], state_tuple[3])
+                    normalized_key = json.dumps(list(normalized_state))
+                    
+                    # Only update if this is a valid state in our state space
+                    if normalized_key in complete:
+                        complete[normalized_key] = value
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                print(f"⚠️  Skipping invalid Q-table key '{key}': {e}")
+                continue
+    
+    return complete
+
+
 class DatabaseService:
     """Service layer for all database operations"""
     
@@ -164,7 +245,10 @@ class DatabaseService:
     @staticmethod
     def save_model_checkpoint(db: Session, user_id: str, training_step: int, epsilon: float, 
                             alpha: float, gamma: float, q_table: dict, model_binary: bytes = None):
-        """Save model checkpoint"""
+        """Save model checkpoint with complete Q-table (all 96 states)"""
+        # Ensure Q-table has all possible states (fills missing with [0.0, 0.0])
+        complete_qtable = ensure_complete_qtable(q_table)
+        
         # Mark previous checkpoint as not latest
         db.query(ModelCheckpoint).filter(
             and_(ModelCheckpoint.user_id == user_id, ModelCheckpoint.is_latest == True)
@@ -176,13 +260,14 @@ class DatabaseService:
             epsilon=epsilon,
             alpha=alpha,
             gamma=gamma,
-            q_table_json=q_table,
+            q_table_json=complete_qtable,
             model_binary=model_binary,
             is_latest=True
         )
         db.add(checkpoint)
         db.commit()
         db.refresh(checkpoint)
+        print(f"💾 Saved model checkpoint for {user_id}: {len(complete_qtable)} states (expected {TOTAL_Q_TABLE_STATES})")
         return checkpoint
     
     @staticmethod
