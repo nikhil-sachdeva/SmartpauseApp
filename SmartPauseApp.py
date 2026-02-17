@@ -364,84 +364,6 @@ REWARD_CONFIG = {
     'long_session_penalty': -40
 }
 
-# ============================================================================
-# Q-TABLE STATE SPACE DEFINITION
-# ============================================================================
-# State: (num_vibrations, is_target_app, day_quarter, is_weekday)
-# - num_vibrations: 0-5 (capped at 5)
-# - is_target_app: 0 (not target), 1 (target app)
-# - day_quarter: 0 (night 0-6), 1 (morning 6-12), 2 (afternoon 12-18), 3 (evening 18-24)
-# - is_weekday: 0 (weekend), 1 (weekday)
-
-STATE_SPACE = {
-    'num_vibrations_range': range(0, 6),      # 0, 1, 2, 3, 4, 5
-    'is_target_app_range': [0, 1],            # 0 or 1
-    'day_quarter_range': range(0, 4),         # 0, 1, 2, 3
-    'is_weekday_range': [0, 1]                # 0 or 1
-}
-
-# Total states: 6 * 2 * 4 * 2 = 96
-TOTAL_Q_TABLE_STATES = 96
-MAX_NUM_VIBRATIONS = 5  # Cap for num_vibrations state component
-
-def generate_complete_qtable() -> Dict:
-    """
-    Generate a complete Q-table with all possible states initialized to [0.0, 0.0].
-    This ensures consistent Q-table size across all model checkpoints.
-    
-    Returns:
-        Dict with 96 states, each with format: "[num_vib, is_target, day_q, is_weekday]": [0.0, 0.0]
-    """
-    qtable = {}
-    for num_vibrations in STATE_SPACE['num_vibrations_range']:
-        for is_target_app in STATE_SPACE['is_target_app_range']:
-            for day_quarter in STATE_SPACE['day_quarter_range']:
-                for is_weekday in STATE_SPACE['is_weekday_range']:
-                    state = (num_vibrations, is_target_app, day_quarter, is_weekday)
-                    qtable[json.dumps(list(state))] = [0.0, 0.0]
-    return qtable
-
-def ensure_complete_qtable(qtable: Dict) -> Dict:
-    """
-    Ensure a Q-table has all possible states, filling missing ones with [0.0, 0.0].
-    This function should be called before saving any Q-table to the database.
-    
-    Args:
-        qtable: Existing Q-table (may have missing states)
-    
-    Returns:
-        Complete Q-table with all 96 states
-    """
-    # Start with complete Q-table (all zeros)
-    complete = generate_complete_qtable()
-    
-    # Update with existing values (preserving learned Q-values)
-    if qtable:
-        for key, value in qtable.items():
-            # Normalize key format to ensure consistency
-            try:
-                if isinstance(key, str):
-                    # Parse the state from string format
-                    parsed = json.loads(key) if key.startswith('[') else [int(x) for x in key.split('_')]
-                    state_tuple = tuple(parsed)
-                else:
-                    state_tuple = tuple(key)
-                
-                # Cap num_vibrations if needed
-                if len(state_tuple) == 4:
-                    num_vib = min(state_tuple[0], MAX_NUM_VIBRATIONS)
-                    normalized_state = (num_vib, state_tuple[1], state_tuple[2], state_tuple[3])
-                    normalized_key = json.dumps(list(normalized_state))
-                    
-                    # Only update if this is a valid state in our state space
-                    if normalized_key in complete:
-                        complete[normalized_key] = value
-            except (json.JSONDecodeError, ValueError, TypeError) as e:
-                print(f"⚠️  Skipping invalid Q-table key '{key}': {e}")
-                continue
-    
-    return complete
-
 # Session division from original (test_type A or C = 120 seconds)
 SESSION_DIVISION_SECONDS = 120
 
@@ -561,7 +483,7 @@ def extract_state_from_first_app(first_app: str, group: Dict, baseline_stats: Di
     
     is_weekday = int(timestamp.weekday() < 5)
     is_target_app = int(first_app in apps_to_monitor)
-    num_vibrations = min(group.get('total_vibrations', 0), MAX_NUM_VIBRATIONS)  # Cap at MAX_NUM_VIBRATIONS
+    num_vibrations = group.get('total_vibrations', 0)
     
     return (num_vibrations, is_target_app, day_quarter, is_weekday)
 
@@ -612,10 +534,7 @@ def extract_state(session: Session, num_vibrations: int, baseline_stats: Dict, a
     # Is target app
     is_target_app = int(session.app_name in apps_to_monitor)
     
-    # Cap num_vibrations at MAX_NUM_VIBRATIONS to ensure state is in Q-table
-    capped_num_vibrations = min(num_vibrations, MAX_NUM_VIBRATIONS)
-    
-    return (capped_num_vibrations, is_target_app, day_quarter, is_weekday)
+    return (num_vibrations, is_target_app, day_quarter, is_weekday)
 
 def process_sessions_into_groups(sessions: List[Session], gap_seconds: int = 120, apps_to_monitor: List[str] = None) -> List[Dict]:
     """Group sessions with small time gaps
@@ -707,7 +626,7 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
             gamma=0.95,
             q_table=basic_qtable
         )
-        print(f"  ✅ Basic Q-table model created for new user ({TOTAL_Q_TABLE_STATES} states, all zeros)")
+        print(f"  ✅ Basic Q-table model created for new user (32 states, all zeros)")
     except Exception as e:
         print(f"  ⚠️  Warning: Could not create basic model for new user: {e}")
     
@@ -1155,55 +1074,55 @@ async def get_queries(user_id: str, date: Optional[str] = None, limit: int = 100
     }
 
 def generate_realistic_qtable(user_id: str) -> dict:
-    """Generate a Q-table with proper RL initialization (small random values around 0).
-    Uses the standard state space: (num_vibrations, is_target_app, day_quarter, is_weekday)
-    """
+    """Generate a Q-table with proper RL initialization (not pre-learned values)"""
     import random
     random.seed(hash(user_id) % 1000)  # User-specific but reproducible
     
     qtable = {}
     
-    # Using standard state space with 96 states
-    for num_vibrations in STATE_SPACE['num_vibrations_range']:
-        for is_target_app in STATE_SPACE['is_target_app_range']:
-            for day_quarter in STATE_SPACE['day_quarter_range']:
-                for is_weekday in STATE_SPACE['is_weekday_range']:
-                    state = (num_vibrations, is_target_app, day_quarter, is_weekday)
+    # New state space: num_queries (0-10), num_vibrations (0-5), is_target_app (0,1), day_quarter (0-3)
+    for num_queries in range(0, 11):
+        for num_vibrations in range(0, 6):
+            for is_target_app in [0, 1]:
+                for day_quarter in range(0, 4):
+                    state = (num_queries, num_vibrations, is_target_app, day_quarter)
                     
-                    # Small random initialization around 0 (common RL practice)
+                    # Using small random initialization around 0 (common practice)
                     no_vibrate_q = round(random.uniform(-0.1, 0.1), 3)
                     vibrate_q = round(random.uniform(-0.1, 0.1), 3)
                     
-                    qtable[json.dumps(list(state))] = [no_vibrate_q, vibrate_q]
+                    qtable[str(list(state))] = [no_vibrate_q, vibrate_q]
+    
+    # Add terminal state with zero values (unreachable state)
+    terminal_state = (-1, -1, -1, -1)
+    qtable[str(list(terminal_state))] = [0.0, 0.0]
     
     return qtable
 
 def generate_learned_qtable(user_id: str) -> dict:
-    """Generate a Q-table that simulates what it might look like after training.
-    Uses the standard state space: (num_vibrations, is_target_app, day_quarter, is_weekday)
-    """
+    """Generate a Q-table that simulates what it might look like after training"""
     import random
     random.seed(hash(user_id) % 1000)  # User-specific but reproducible
     
     qtable = {}
     
-    # Using standard state space with 96 states
-    for num_vibrations in STATE_SPACE['num_vibrations_range']:
-        for is_target_app in STATE_SPACE['is_target_app_range']:
-            for day_quarter in STATE_SPACE['day_quarter_range']:
-                for is_weekday in STATE_SPACE['is_weekday_range']:
-                    state = (num_vibrations, is_target_app, day_quarter, is_weekday)
+    # New state space: num_queries (0-10), num_vibrations (0-5), is_target_app (0,1), day_quarter (0-3)
+    for num_queries in range(0, 11):
+        for num_vibrations in range(0, 6):
+            for is_target_app in [0, 1]:
+                for day_quarter in range(0, 4):
+                    state = (num_queries, num_vibrations, is_target_app, day_quarter)
                     
                     # Simulate learned Q-values based on expected reward patterns
                     intervention_score = 0.0
                     if is_target_app == 1: intervention_score += 0.4
-                    if num_vibrations >= 2: intervention_score += 0.3
+                    if num_vibrations >= 3: intervention_score += 0.3
                     if day_quarter == 2: intervention_score += 0.2  # Afternoon
                     elif day_quarter == 3: intervention_score += 0.3  # Evening
                     elif day_quarter == 1: intervention_score += 0.1  # Morning
-                    if is_weekday == 0: intervention_score += 0.1  # Weekend
+                    if num_queries >= 5: intervention_score += 0.2
                     
-                    # Learned values after training
+                    # Learned values after training (what algorithm might discover)
                     if intervention_score >= 0.7:
                         no_vibrate_q = round(random.uniform(-0.6, -0.2), 3)
                         vibrate_q = round(random.uniform(0.6, 1.0), 3)
@@ -1217,16 +1136,30 @@ def generate_learned_qtable(user_id: str) -> dict:
                         no_vibrate_q = round(random.uniform(0.4, 0.8), 3)
                         vibrate_q = round(random.uniform(-0.2, 0.2), 3)
                     
-                    qtable[json.dumps(list(state))] = [no_vibrate_q, vibrate_q]
+                    qtable[str(list(state))] = [no_vibrate_q, vibrate_q]
+    
+    # Add terminal state with zero values (unreachable state)
+    terminal_state = (-1, -1, -1, -1)
+    qtable[str(list(terminal_state))] = [0.0, 0.0]
     
     return qtable
 
 def generate_basic_qtable_for_new_user(user_id: str) -> dict:
-    """Generate a basic Q-table with zero initialization for new users.
-    Uses the standard state space: (num_vibrations, is_target_app, day_quarter, is_weekday)
-    Returns a complete Q-table with all 96 states initialized to [0.0, 0.0].
-    """
-    return generate_complete_qtable()
+    """Generate a basic Q-table with zero initialization for new users"""
+    qtable = {}
+    # New state space: num_queries (0-10), num_vibrations (0-5), is_target_app (0,1), day_quarter (0-3)
+    for num_queries in range(0, 11):
+        for num_vibrations in range(0, 6):
+            for is_target_app in [0, 1]:
+                for day_quarter in range(0, 4):
+                    state = (num_queries, num_vibrations, is_target_app, day_quarter)
+                    qtable[str(list(state))] = [0.0, 0.0]
+    
+    # Add terminal state with zero values (unreachable state)
+    terminal_state = (-1, -1, -1, -1)
+    qtable[str(list(terminal_state))] = [0.0, 0.0]
+    
+    return qtable
 
 @app.post("/api/v1/baseline/generate-sample")
 async def generate_sample_data(request_data: Optional[Dict] = None):
@@ -1345,15 +1278,15 @@ async def generate_sample_data(request_data: Optional[Dict] = None):
             "target_app_sessions": sum(1 for s in sample_sessions if s.app_name in target_apps),
             "total_vibrations": sum(s.num_vibrations for s in sample_sessions),
             "compliance_rate": sum(1 for s in sample_sessions if s.user_complied and s.num_vibrations > 0),
-            "q_table_states": len(q_table),  # Should be 96 states
+            "q_table_states": len(q_table),  # Should be 32 states
             "q_table_actions": 2,  # vibrate vs no_vibrate
             "q_table_type": q_table_type,
             "q_table_description": q_table_description,
             "state_variables": {
-                "num_vibrations": "0-5 (capped at 5)",
-                "is_target_app": "0=not_monitored, 1=monitored",
-                "day_quarter": "0=night (0-6), 1=morning (6-12), 2=afternoon (12-18), 3=evening (18-24)",
-                "is_weekday": "0=weekend, 1=weekday"
+                "monitored_app": "0=not_monitored, 1=monitored",
+                "session_length": "0=short, 1=long", 
+                "time_of_day": "0=morning, 1=afternoon, 2=evening, 3=night",
+                "day_type": "0=weekday, 1=weekend"
             }
         }
     }
@@ -1544,6 +1477,45 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
             break
         
         next_query = sorted_queries[i + 1]
+        if query.group_id != next_query.group_id:
+            print(f"Group ID changed: {query.group_id} -> {next_query.group_id} - Learning from terminal state")
+            
+            # Learn from terminal state (unreachable state) before group boundary
+            terminal_state = (-1, -1, -1, -1)  # Terminal state with all Q-values = 0
+            
+            # Extract current state from query
+            if isinstance(query.state, list):
+                current_state = tuple(query.state)
+            elif isinstance(query.state, str):
+                current_state = tuple(json.loads(query.state))
+            else:
+                print(f"Error: Unexpected type for query.state: {type(query.state)}")
+                continue
+            
+            # Get action and compliance from current query
+            action = query.action
+            compliance = query.compliance
+            reward = calculate_reward(action, compliance)
+            
+            # Get Q-values before terminal learning
+            q_before = agent.q_table[current_state][action]
+            
+            # Learn from terminal state (this will increment agent.training_steps internally)
+            agent.learn(current_state, terminal_state, action, reward)
+            
+            # Get Q-values after terminal learning
+            q_after = agent.q_table[current_state][action]
+            
+            # Log terminal state learning to database
+            DatabaseService.log_training(
+                db, user_id, date, current_state, terminal_state, action, reward,
+                q_before, q_after, agent.alpha, agent.gamma
+            )
+            
+            learned_count += 1
+            print(f"Terminal learning: state={current_state}, terminal_state={terminal_state}, action={action}, compliance={compliance}, reward={reward:.2f}")
+            
+            continue
         print(f"\n=== Processing query pair {i} ===")
         print(f"About to enter try block")
         
@@ -1597,10 +1569,15 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
     checkpoint_saved = False
     print(f"\n💾 Saving checkpoint: {len(agent.q_table)} states, training_step={agent.training_steps}, ε={agent.epsilon:.4f}")
     try:
+        # padded_qtable = pad_qtable_to_full_shape({json.dumps(list(k)): v for k, v in agent.q_table.items()})
         DatabaseService.save_model_checkpoint(
             db, user_id, agent.training_steps, agent.epsilon,
-            agent.alpha, agent.gamma, {json.dumps(list(k)): v for k, v in agent.q_table.items()}
+            agent.alpha, agent.gamma, q_table={json.dumps(list(k)): v for k, v in agent.q_table.items()}    
         )
+        # DatabaseService.save_model_checkpoint(
+        #     db, user_id, agent.training_steps, agent.epsilon,
+        #     agent.alpha, agent.gamma, {json.dumps(list(k)): v for k, v in agent.q_table.items()}
+        # )
         checkpoint_saved = True
         print(f"✅ Model checkpoint saved successfully for user {user_id}")
         print(f"   Q-table size: {len(agent.q_table)} states")

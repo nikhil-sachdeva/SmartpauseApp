@@ -11,21 +11,22 @@ from database import SessionLocal, User, Session as SessionModel, GroupedSession
 # ============================================================================
 # Q-TABLE STATE SPACE DEFINITION
 # ============================================================================
-# State: (num_vibrations, is_target_app, day_quarter, is_weekday)
+# State: (num_queries, num_vibrations, is_target_app, day_quarter)
+# - num_queries: 0-10
 # - num_vibrations: 0-5 (capped at 5)
 # - is_target_app: 0 (not target), 1 (target app)
 # - day_quarter: 0 (night 0-6), 1 (morning 6-12), 2 (afternoon 12-18), 3 (evening 18-24)
-# - is_weekday: 0 (weekend), 1 (weekday)
 
 STATE_SPACE = {
-    'num_vibrations_range': range(0, 6),      # 0, 1, 2, 3, 4, 5
+    'num_queries_range': range(0, 11),        # 0-10
+    'num_vibrations_range': range(0, 6),      # 0-5
     'is_target_app_range': [0, 1],            # 0 or 1
-    'day_quarter_range': range(0, 4),         # 0, 1, 2, 3
-    'is_weekday_range': [0, 1]                # 0 or 1
+    'day_quarter_range': range(0, 4)          # 0-3
 }
 
-# Total states: 6 * 2 * 4 * 2 = 96
-TOTAL_Q_TABLE_STATES = 96
+# Total states: 11 * 6 * 2 * 4 = 528
+TOTAL_Q_TABLE_STATES = 528
+MAX_NUM_QUERIES = 10  # Cap for num_queries state component
 MAX_NUM_VIBRATIONS = 5  # Cap for num_vibrations state component
 
 
@@ -35,14 +36,14 @@ def generate_complete_qtable() -> dict:
     This ensures consistent Q-table size across all model checkpoints.
     
     Returns:
-        Dict with 96 states, each with format: "[num_vib, is_target, day_q, is_weekday]": [0.0, 0.0]
+        Dict with 528 states, each with format: "[num_queries, num_vibrations, is_target, day_quarter]": [0.0, 0.0]
     """
     qtable = {}
-    for num_vibrations in STATE_SPACE['num_vibrations_range']:
-        for is_target_app in STATE_SPACE['is_target_app_range']:
-            for day_quarter in STATE_SPACE['day_quarter_range']:
-                for is_weekday in STATE_SPACE['is_weekday_range']:
-                    state = (num_vibrations, is_target_app, day_quarter, is_weekday)
+    for num_queries in STATE_SPACE['num_queries_range']:
+        for num_vibrations in STATE_SPACE['num_vibrations_range']:
+            for is_target_app in STATE_SPACE['is_target_app_range']:
+                for day_quarter in STATE_SPACE['day_quarter_range']:
+                    state = (num_queries, num_vibrations, is_target_app, day_quarter)
                     qtable[json.dumps(list(state))] = [0.0, 0.0]
     return qtable
 
@@ -56,7 +57,7 @@ def ensure_complete_qtable(qtable: dict) -> dict:
         qtable: Existing Q-table (may have missing states)
     
     Returns:
-        Complete Q-table with all 96 states
+        Complete Q-table with all 528 states
     """
     # Start with complete Q-table (all zeros)
     complete = generate_complete_qtable()
@@ -73,10 +74,11 @@ def ensure_complete_qtable(qtable: dict) -> dict:
                 else:
                     state_tuple = tuple(key)
                 
-                # Cap num_vibrations if needed
+                # Cap num_queries and num_vibrations if needed
                 if len(state_tuple) == 4:
-                    num_vib = min(state_tuple[0], MAX_NUM_VIBRATIONS)
-                    normalized_state = (num_vib, state_tuple[1], state_tuple[2], state_tuple[3])
+                    num_queries = min(state_tuple[0], MAX_NUM_QUERIES)
+                    num_vib = min(state_tuple[1], MAX_NUM_VIBRATIONS)
+                    normalized_state = (num_queries, num_vib, state_tuple[2], state_tuple[3])
                     normalized_key = json.dumps(list(normalized_state))
                     
                     # Only update if this is a valid state in our state space
