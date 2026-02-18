@@ -643,6 +643,7 @@ async def upload_daily_sessions(
             "sessions_count": len(batch.sessions),
             "queries_count": queries_count,
             "day_number": day_number,
+            "current_day": day_number,  # Add current_day for frontend
             "date": batch.date,
             "baseline_exists": baseline_exists
         }
@@ -688,6 +689,12 @@ async def upload_daily_sessions(
                     "q_table_size": training_result.get("q_table_size", 0),
                     "training_steps": training_result.get("training_steps", 0),
                     "checkpoint_saved": training_result.get("checkpoint_saved", False)
+                }
+                
+                # Include updated Q-table and metadata in response
+                response["updated_model"] = {
+                    "q_table": training_result.get("q_table", {}),
+                    "metadata": training_result.get("model_metadata", {})
                 }
                 
                 # Determine if we're in intervention period based on baseline existence or day number
@@ -737,6 +744,7 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
     # Get user's apps_to_monitor
     user = DatabaseService.get_user(db, user_id)
     apps_to_monitor = user.apps_to_monitor if user and user.apps_to_monitor else []
+    current_day = user.current_day if user else 0  # Get current day for frontend
     
     baseline_stats = DatabaseService.get_baseline_stats(db, user_id)
     
@@ -761,6 +769,7 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
 
     model_data = {
         "user_id": user_id,
+        "current_day": current_day,  # Add current_day for frontend
         "model_version": checkpoint.training_step if checkpoint else 0,
         "updated_at": checkpoint.created_at.isoformat() if checkpoint else datetime.now().isoformat(),
         "baseline_stats": baseline_data,
@@ -1345,21 +1354,41 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
                 agent.alpha, agent.gamma, {json.dumps(list(k)): v for k, v in agent.q_table.items()}
             )
             print(f"✅ Model checkpoint updated for user {user_id} - no queries but training attempt tracked")
+            q_table_data = {json.dumps(list(k)): v for k, v in agent.q_table.items()}
             return {
                 "learned_transitions": 0,
                 "q_table_size": len(agent.q_table),
                 "training_steps": agent.training_steps,
                 "checkpoint_saved": True,
-                "message": "No queries found, but training attempt tracked"
+                "message": "No queries found, but training attempt tracked",
+                "q_table": q_table_data,
+                "model_metadata": {
+                    "epsilon": agent.epsilon,
+                    "alpha": agent.alpha,
+                    "gamma": agent.gamma,
+                    "training_steps": agent.training_steps,
+                    "q_table_states": len(agent.q_table),
+                    "last_updated": datetime.now().isoformat()
+                }
             }
         except Exception as e:
             print(f"❌ Error saving checkpoint for no-query case: {e}")
+            q_table_data = {json.dumps(list(k)): v for k, v in agent.q_table.items()} if agent.q_table else {}
             return {
                 "learned_transitions": 0,
                 "q_table_size": len(agent.q_table) if agent.q_table else 0,
                 "training_steps": agent.training_steps,
                 "checkpoint_saved": False,
-                "message": "No queries found, checkpoint save failed"
+                "message": "No queries found, checkpoint save failed",
+                "q_table": q_table_data,
+                "model_metadata": {
+                    "epsilon": agent.epsilon if agent else 1.0,
+                    "alpha": agent.alpha if agent else 0.1,
+                    "gamma": agent.gamma if agent else 0.95,
+                    "training_steps": agent.training_steps if agent else 0,
+                    "q_table_states": len(agent.q_table) if agent and agent.q_table else 0,
+                    "last_updated": datetime.now().isoformat()
+                }
             }
     
     print(f"Training model for user {user_id} with {len(queries)} queries from {date}")
@@ -1546,11 +1575,23 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
     print(f"Training complete. Learned from {learned_count} transitions. Q-table size: {len(agent.q_table)}, Training steps: {agent.training_steps}")
     print(f"Checkpoint saved: {checkpoint_saved}")
     
+    # Prepare Q-table for response
+    q_table_data = {json.dumps(list(k)): v for k, v in agent.q_table.items()}
+    
     return {
         "learned_transitions": learned_count,
         "q_table_size": len(agent.q_table),
         "training_steps": agent.training_steps,
-        "checkpoint_saved": checkpoint_saved
+        "checkpoint_saved": checkpoint_saved,
+        "q_table": q_table_data,
+        "model_metadata": {
+            "epsilon": agent.epsilon,
+            "alpha": agent.alpha,
+            "gamma": agent.gamma,
+            "training_steps": agent.training_steps,
+            "q_table_states": len(agent.q_table),
+            "last_updated": datetime.now().isoformat()
+        }
     }
 
 @app.get("/")
