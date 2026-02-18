@@ -352,22 +352,6 @@ class EdgeQLearningAgent:
 # ============================================================================
 
 # ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-
-# EXACTLY matches config from original SmartQuit.ipynb
-REWARD_CONFIG = {
-    'vibration_penalty': -40,
-    'vibration_compliance_reward': 60,
-    'session_break_reward': 40,
-    'long_session_penalty': -40
-}
-
-# Session division from original (test_type A or C = 120 seconds)
-SESSION_DIVISION_SECONDS = 120
-
-# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
@@ -393,17 +377,18 @@ def calculate_baseline_stats(sessions: List[Session], apps_to_monitor: List[str]
             "query_interval_seconds": 300
         }
     
-    # Group sessions by group_id
+    # Group sessions by group_id AND date (so sessions from different days aren't grouped together)
     groups = defaultdict(list)
     for session in sessions:
-        groups[session.group_id].append(session)
+        # Use the date column from session data
+        groups[(session.group_id, session.date)].append(session)
     
     # Calculate target app duration per group AND total duration per group
     group_target_durations = []
     group_total_durations = []
     all_session_durations = []
     
-    for group_id, group_sessions in groups.items():
+    for (group_id, date), group_sessions in groups.items():
         # Sum up target app durations in this group
         group_target_duration = sum(
             s.duration_seconds for s in group_sessions 
@@ -515,7 +500,11 @@ def extract_state(session: Session, num_vibrations: int, baseline_stats: Dict, a
     if apps_to_monitor is None:
         apps_to_monitor = []
     
-    timestamp = datetime.fromisoformat(session.start_time)
+    # Handle both string (from API) and datetime (from database) inputs
+    if isinstance(session.start_time, str):
+        timestamp = datetime.fromisoformat(session.start_time)
+    else:
+        timestamp = session.start_time  # Already a datetime object
     
     # Time of day quarter (0-3)
     hour = timestamp.hour
@@ -535,59 +524,6 @@ def extract_state(session: Session, num_vibrations: int, baseline_stats: Dict, a
     is_target_app = int(session.app_name in apps_to_monitor)
     
     return (num_vibrations, is_target_app, day_quarter, is_weekday)
-
-def process_sessions_into_groups(sessions: List[Session], gap_seconds: int = 120, apps_to_monitor: List[str] = None) -> List[Dict]:
-    """Group sessions with small time gaps
-    
-    Uses apps_to_monitor from user table to calculate target duration.
-    If not provided, uses empty list (no apps monitored).
-    """
-    if apps_to_monitor is None:
-        apps_to_monitor = []
-    
-    if not sessions:
-        return []
-    
-    # Sort by time
-    sorted_sessions = sorted(sessions, key=lambda x: x.start_time)
-    
-    groups = []
-    current_group = [sorted_sessions[0]]
-    
-    for i in range(1, len(sorted_sessions)):
-        prev_end = datetime.fromisoformat(sorted_sessions[i-1].end_time)
-        curr_start = datetime.fromisoformat(sorted_sessions[i].start_time)
-        
-        gap = (curr_start - prev_end).total_seconds()
-        
-        if gap <= gap_seconds:
-            current_group.append(sorted_sessions[i])
-        else:
-            groups.append(current_group)
-            current_group = [sorted_sessions[i]]
-    
-    groups.append(current_group)
-    
-    # Convert to group dicts
-    group_dicts = []
-    for idx, group in enumerate(groups):
-        total_duration = sum(s.duration_seconds for s in group)
-        target_duration = sum(
-            s.duration_seconds for s in group 
-            if s.app_name in apps_to_monitor
-        )
-        
-        group_dicts.append({
-            "group_id": idx,
-            "sessions": group,
-            "total_duration": total_duration,
-            "target_duration": target_duration,
-            "start_time": group[0].start_time,
-            "end_time": group[-1].end_time,
-            "first_app": group[0].app_name
-        })
-    
-    return group_dicts
 
 # ============================================================================
 # API ENDPOINTS
@@ -822,33 +758,12 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
     
     # Get latest model checkpoint
     checkpoint = DatabaseService.get_latest_model(db, user_id)
-    
-    # Get sessions data for the user
-    sessions_data = []
-    try:
-        sessions = DatabaseService.get_all_sessions(db, user_id)
-        for session in sessions:
-            sessions_data.append({
-                "app_name": session.app_name,
-                "start_time": session.start_time,
-                "end_time": session.end_time,
-                "duration_seconds": session.duration_seconds,
-                "num_vibrations": session.num_vibrations,
-                "user_complied": session.user_complied,
-                "group_id": session.group_id,
-                "date": session.date
-            })
-    except Exception as e:
-        print(f"Error fetching sessions: {e}")
-        sessions_data = []
-    
+
     model_data = {
         "user_id": user_id,
         "model_version": checkpoint.training_step if checkpoint else 0,
         "updated_at": checkpoint.created_at.isoformat() if checkpoint else datetime.now().isoformat(),
         "baseline_stats": baseline_data,
-        "sessions": sessions_data,
-        "reward_config": REWARD_CONFIG,
         "apps_to_monitor": apps_to_monitor,
     }
     
@@ -1492,6 +1407,18 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
                 print(f"Error: Unexpected type for query.state: {type(query.state)}")
                 continue
             
+            # Validate current state dimensions
+            def is_valid_state(s):
+                return (len(s) == 4 and 
+                        0 <= s[0] <= 10 and  # num_queries
+                        0 <= s[1] <= 5 and   # num_vibrations
+                        s[2] in [0, 1] and   # is_target_app
+                        0 <= s[3] <= 3)      # day_quarter
+            
+            if not is_valid_state(current_state):
+                print(f"⚠️ Skipping invalid current_state for terminal learning: {current_state} (expected ranges: [0-10, 0-5, 0-1, 0-3])")
+                continue
+            
             # Get action and compliance from current query
             action = query.action
             compliance = query.compliance
@@ -1536,6 +1463,23 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
             next_state = tuple(json.loads(next_query.state))
         else:
             print(f"Error: Unexpected type for next_query.state: {type(next_query.state)}")
+            continue
+        
+        # Validate state dimensions to ensure Q-table doesn't exceed 528 states
+        # Expected: (num_queries: 0-10, num_vibrations: 0-5, is_target_app: 0-1, day_quarter: 0-3)
+        def is_valid_state(s):
+            return (len(s) == 4 and 
+                    0 <= s[0] <= 10 and  # num_queries
+                    0 <= s[1] <= 5 and   # num_vibrations
+                    s[2] in [0, 1] and   # is_target_app
+                    0 <= s[3] <= 3)      # day_quarter
+        
+        if not is_valid_state(state):
+            print(f"⚠️ Skipping invalid state: {state} (expected ranges: [0-10, 0-5, 0-1, 0-3])")
+            continue
+        
+        if not is_valid_state(next_state):
+            print(f"⚠️ Skipping invalid next_state: {next_state} (expected ranges: [0-10, 0-5, 0-1, 0-3])")
             continue
         
         # Get action and compliance from query
