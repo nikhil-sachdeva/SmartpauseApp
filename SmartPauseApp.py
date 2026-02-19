@@ -371,10 +371,12 @@ def calculate_baseline_stats(sessions: List[Session], apps_to_monitor: List[str]
         apps_to_monitor = []
     
     if not sessions:
+        # No sessions available — return explicit nulls so API consumers
+        # can distinguish "no baseline" from a computed/default value.
         return {
-            "median_target_app_usage_seconds": 300,
-            "median_session_usage_seconds": 300,
-            "query_interval_seconds": 300
+            "median_target_app_usage_seconds": None,
+            "median_session_usage_seconds": None,
+            "query_interval_seconds": None
         }
     
     # Group sessions by group_id AND date (so sessions from different days aren't grouped together)
@@ -407,21 +409,24 @@ def calculate_baseline_stats(sessions: List[Session], apps_to_monitor: List[str]
     
     # Calculate medians from grouped data
     if not group_target_durations:
-        median_target_usage = 300  # Default 5 minutes
+        median_target_usage = None
     else:
         group_target_durations.sort()
         median_target_usage = group_target_durations[len(group_target_durations) // 2]
     
     if not group_total_durations:
-        median_session_usage = 300  # Default 5 minutes
+        median_session_usage = None
     else:
         group_total_durations.sort()
         median_session_usage = group_total_durations[len(group_total_durations) // 2]
     
     # 75th percentile for query interval (from all individual sessions)
-    all_session_durations.sort()
-    percentile_75_index = int(len(all_session_durations) * 0.75)
-    percentile_75 = all_session_durations[percentile_75_index] if percentile_75_index < len(all_session_durations) else all_session_durations[-1]
+    if not all_session_durations:
+        percentile_75 = None
+    else:
+        all_session_durations.sort()
+        percentile_75_index = int(len(all_session_durations) * 0.75)
+        percentile_75 = all_session_durations[percentile_75_index] if percentile_75_index < len(all_session_durations) else all_session_durations[-1]
     
     return {
         "median_target_app_usage_seconds": median_target_usage,
@@ -647,6 +652,8 @@ async def upload_daily_sessions(
             "date": batch.date,
             "baseline_exists": baseline_exists
         }
+        # Default baseline_stats to None unless we compute or fetch them
+        response["baseline_stats"] = None
         
         # Handle baseline stats logic
         if baseline_exists:
@@ -757,11 +764,11 @@ async def download_model(user_id: str, format: str = "binary", db: SQLSession = 
             "query_interval_seconds": baseline_stats.query_interval_seconds
         }
     else:
-        # Provide default values if no baseline stats exist
+        # No baseline stats — return explicit nulls so client can detect absence
         baseline_data = {
-            "median_target_app_usage_seconds": 300,
-            "median_session_usage_seconds": 300,
-            "query_interval_seconds": 300
+            "median_target_app_usage_seconds": None,
+            "median_session_usage_seconds": None,
+            "query_interval_seconds": None
         }
     
     # Get latest model checkpoint
@@ -1422,7 +1429,8 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
         
         next_query = sorted_queries[i + 1]
         if query.group_id != next_query.group_id:
-            print(f"Group ID changed: {query.group_id} -> {next_query.group_id} - Learning from terminal state")
+            print(f"\n🔄 GROUP BOUNDARY DETECTED: {query.group_id} → {next_query.group_id}")
+            print(f"   Triggering TERMINAL STATE LEARNING for group transition")
             
             # Learn from terminal state (unreachable state) before group boundary
             terminal_state = (-1, -1, -1, -1)  # Terminal state with all Q-values = 0
@@ -1433,7 +1441,7 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
             elif isinstance(query.state, str):
                 current_state = tuple(json.loads(query.state))
             else:
-                print(f"Error: Unexpected type for query.state: {type(query.state)}")
+                print(f"❌ Error: Unexpected type for query.state: {type(query.state)}")
                 continue
             
             # Validate current state dimensions
@@ -1453,14 +1461,26 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
             compliance = query.compliance
             reward = calculate_reward(action, compliance)
             
+            print(f"🎯 TERMINAL STATE LEARNING:")
+            print(f"   Current State: {current_state} (queries={current_state[0]}, vibrations={current_state[1]}, target_app={bool(current_state[2])}, time_quarter={current_state[3]})")
+            print(f"   Terminal State: {terminal_state} (all Q-values = 0.0)")
+            print(f"   Action: {'VIBRATE' if action == 1 else 'NO_VIBRATE'} ({action})")
+            print(f"   Compliance: {'COMPLIED' if compliance == 1 else 'DID_NOT_COMPLY'} ({compliance})")
+            print(f"   Reward: {reward:.2f}")
+            
             # Get Q-values before terminal learning
             q_before = agent.q_table[current_state][action]
+            print(f"   Q-value before: {q_before:.4f}")
             
             # Learn from terminal state (this will increment agent.training_steps internally)
+            print(f"   Learning parameters: α={agent.alpha}, γ={agent.gamma}")
             agent.learn(current_state, terminal_state, action, reward)
             
             # Get Q-values after terminal learning
             q_after = agent.q_table[current_state][action]
+            q_change = q_after - q_before
+            print(f"   Q-value after: {q_after:.4f} (change: {q_change:+.4f})")
+            print(f"   Training steps: {agent.training_steps}")
             
             # Log terminal state learning to database
             DatabaseService.log_training(
@@ -1469,7 +1489,8 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
             )
             
             learned_count += 1
-            print(f"Terminal learning: state={current_state}, terminal_state={terminal_state}, action={action}, compliance={compliance}, reward={reward:.2f}")
+            print(f"✅ Terminal learning completed and logged to database")
+            print(f"   Total learned transitions so far: {learned_count}")
             
             continue
         print(f"\n=== Processing query pair {i} ===")
