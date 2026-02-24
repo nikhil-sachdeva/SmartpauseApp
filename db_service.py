@@ -92,8 +92,13 @@ def ensure_complete_qtable(qtable: dict) -> dict:
 
 
 class DatabaseService:
-    """Service layer for all database operations"""
+    @staticmethod
+    def get_upload_count(db: Session, user_id: str) -> int:
+        """Return the number of unique session upload dates for a user (i.e., number of uploads)."""
+        return db.query(SessionModel.date).filter(SessionModel.user_id == user_id).distinct().count()
+
     
+    """Service layer for all database operations"""
     @staticmethod
     def create_user(db: Session, user_id: str, device_info: dict = None, apps_to_monitor: list = None):
         """Create a new user"""

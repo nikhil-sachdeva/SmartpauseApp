@@ -622,16 +622,14 @@ async def upload_daily_sessions(
         # Check if baseline stats already exist for this user
         existing_baseline_stats = DatabaseService.get_baseline_stats(db, batch.user_id)
         baseline_exists = existing_baseline_stats is not None
-        
-        # Automatically calculate day number from date
-        day_number = DatabaseService.calculate_day_number(db, batch.user_id, batch.date)
-        
-        print(f"✅ Calculated day number: {day_number} for date {batch.date}")
-        print(f"✅ Baseline stats exist: {baseline_exists}")
-        
+
+        # Calculate upload count for the user (number of session uploads)
+        upload_count = DatabaseService.get_upload_count(db, batch.user_id)
+        print(f"✅ Upload count for user {batch.user_id}: {upload_count}")
+
         # Save sessions to database
         DatabaseService.save_sessions(db, batch.user_id, batch.date, batch.sessions)
-        
+
         # Save queries to database (if provided)
         queries_count = 0
         if batch.queries and len(batch.queries) > 0:
@@ -642,53 +640,54 @@ async def upload_daily_sessions(
             except Exception as e:
                 print(f"⚠️ Failed to save queries: {e}")
                 # Don't fail the entire upload if queries fail
-        
+
         response = {
             "status": "received",
             "sessions_count": len(batch.sessions),
             "queries_count": queries_count,
-            "day_number": day_number,
-            "current_day": day_number,  # Add current_day for frontend
+            "upload_count": upload_count,
             "date": batch.date,
             "baseline_exists": baseline_exists
         }
         # Default baseline_stats to None unless we compute or fetch them
         response["baseline_stats"] = None
-        
+
         # Handle baseline stats logic
         if baseline_exists:
             # Skip baseline period - user already has baseline stats
-            response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with day {day_number} data."
+            response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with upload {upload_count} data."
             response["baseline_stats"] = {
                 "median_target_app_usage_seconds": existing_baseline_stats.median_target_app_usage_seconds,
                 "median_session_usage_seconds": existing_baseline_stats.median_session_usage_seconds,
                 "query_interval_seconds": existing_baseline_stats.query_interval_seconds
             }
-        elif day_number == 1:
-            # Calculate baseline stats after completing 2-day baseline period
+        elif upload_count == 2:
+            # Calculate baseline stats after second upload
             baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
-            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (2-day baseline)")
-            
+            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (2 uploads)")
+
             # Get user's apps_to_monitor for baseline calculation
             user = DatabaseService.get_user(db, batch.user_id)
             user_apps = user.apps_to_monitor if user and user.apps_to_monitor else []
-            
+
             stats = calculate_baseline_stats(baseline_sessions, user_apps)
             DatabaseService.save_baseline_stats(db, batch.user_id, stats)
             response["baseline_stats"] = stats
-            response["message"] = "Baseline period completed (2 days). Model training continues daily."
+            response["message"] = "Baseline period completed (2 uploads). Model training continues daily."
             print(f"Baseline stats: {stats}")
-        
+        else:
+            response["message"] = f"Upload {upload_count} recorded. Baseline stats will be calculated after the second upload."
+
         # Train model daily regardless of baseline/intervention period
         training_result = None
-        if day_number >= 1:  # Start training from day 1 (after first day of data)
-            print(f"Starting synchronous training for user {batch.user_id}, day {day_number}")
-            
+        if upload_count >= 1:  # Start training from first upload
+            print(f"Starting synchronous training for user {batch.user_id}, upload {upload_count}")
+
             # Run training synchronously to ensure model is updated before response
             try:
                 training_result = await train_model_daily(batch.user_id, batch.date, batch.queries if batch.queries else [], db)
                 print(f"✅ Training completed for user {batch.user_id}: {training_result}")
-                
+
                 # Add training results to response for confirmation
                 response["model_training"] = {
                     "status": "completed",
@@ -697,21 +696,23 @@ async def upload_daily_sessions(
                     "training_steps": training_result.get("training_steps", 0),
                     "checkpoint_saved": training_result.get("checkpoint_saved", False)
                 }
-                
+
                 # Include updated Q-table and metadata in response
                 response["updated_model"] = {
                     "q_table": training_result.get("q_table", {}),
                     "metadata": training_result.get("model_metadata", {})
                 }
-                
-                # Determine if we're in intervention period based on baseline existence or day number
+
+                # Determine if we're in intervention period based on baseline existence or upload count
                 if baseline_exists:
-                    response["message"] = f"Training completed with day {day_number} data (intervention period - baseline exists). Model updated and ready for download."
-                elif day_number >= 2:
-                    response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download."
+                    response["message"] = f"Training completed with upload {upload_count} data (intervention period - baseline exists). Model updated and ready for download."
+                elif upload_count >= 3:
+                    response["message"] = f"Training completed with upload {upload_count} data (intervention period). Model updated and ready for download."
+                elif upload_count == 2:
+                    response["message"] = f"Training completed with upload {upload_count} data (baseline period just completed). Model updated and ready for download."
                 else:
-                    response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download."
-                    
+                    response["message"] = f"Training completed with upload {upload_count} data (baseline period). Model updated and ready for download."
+
             except Exception as e:
                 print(f"❌ Training failed for user {batch.user_id}: {e}")
                 response["model_training"] = {
@@ -722,13 +723,11 @@ async def upload_daily_sessions(
                     "training_steps": 0,
                     "checkpoint_saved": False
                 }
-                response["message"] = f"Session upload successful but model training failed for day {day_number}. Error: {str(e)}"
-        else:
-            response["message"] = f"Day {day_number} recorded. Model training starts from day 1."
-        
-        # Update user's current day
-        DatabaseService.update_user_day(db, batch.user_id, day_number)
-        
+                response["message"] = f"Session upload successful but model training failed for upload {upload_count}. Error: {str(e)}"
+
+        # Update user's current upload count as their 'current_day' for compatibility
+        DatabaseService.update_user_day(db, batch.user_id, upload_count)
+
         return response
     
     except ValueError as e:
