@@ -433,7 +433,8 @@ class DatabaseService:
                 current_app=query.current_app,
                 state=json.dumps(query.state),  # Convert list to JSON string
                 action=query.action,
-                compliance=query.compliance
+                compliance=query.compliance,
+                is_exploit=getattr(query, 'is_exploit', 0)  # 0 = random/explore, 1 = Q-table exploit
             )
             db.add(db_query)
         

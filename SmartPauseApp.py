@@ -181,6 +181,7 @@ class Query(BaseModel):
     state: List[int]  # JSON array of state values
     action: int  # 0 or 1
     compliance: int  # 0 or 1
+    is_exploit: int = 0  # 0 = random/explore, 1 = Q-table exploit
 
 class DailyUpload(BaseModel):
     user_id: str
@@ -623,9 +624,9 @@ async def upload_daily_sessions(
         existing_baseline_stats = DatabaseService.get_baseline_stats(db, batch.user_id)
         baseline_exists = existing_baseline_stats is not None
 
-        # Calculate upload count for the user (number of session uploads)
-        upload_count = DatabaseService.get_upload_count(db, batch.user_id)
-        print(f"✅ Upload count for user {batch.user_id}: {upload_count}")
+        # Calculate day number for the user (number of session uploads)
+        day_number = DatabaseService.get_upload_count(db, batch.user_id)
+        print(f"✅ Day number for user {batch.user_id}: {day_number}")
 
         # Save sessions to database
         DatabaseService.save_sessions(db, batch.user_id, batch.date, batch.sessions)
@@ -645,7 +646,7 @@ async def upload_daily_sessions(
             "status": "received",
             "sessions_count": len(batch.sessions),
             "queries_count": queries_count,
-            "upload_count": upload_count,
+            "day_number": day_number,
             "date": batch.date,
             "baseline_exists": baseline_exists
         }
@@ -655,13 +656,13 @@ async def upload_daily_sessions(
         # Handle baseline stats logic
         if baseline_exists:
             # Skip baseline period - user already has baseline stats
-            response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with upload {upload_count} data."
+            response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with day {day_number} data."
             response["baseline_stats"] = {
                 "median_target_app_usage_seconds": existing_baseline_stats.median_target_app_usage_seconds,
                 "median_session_usage_seconds": existing_baseline_stats.median_session_usage_seconds,
                 "query_interval_seconds": existing_baseline_stats.query_interval_seconds
             }
-        elif upload_count == 2:
+        elif day_number == 2:
             # Calculate baseline stats after second upload
             baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
             print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (2 uploads)")
@@ -676,12 +677,12 @@ async def upload_daily_sessions(
             response["message"] = "Baseline period completed (2 uploads). Model training continues daily."
             print(f"Baseline stats: {stats}")
         else:
-            response["message"] = f"Upload {upload_count} recorded. Baseline stats will be calculated after the second upload."
+            response["message"] = f"Day {day_number} recorded. Baseline stats will be calculated after the second upload."
 
         # Train model daily regardless of baseline/intervention period
         training_result = None
-        if upload_count >= 1:  # Start training from first upload
-            print(f"Starting synchronous training for user {batch.user_id}, upload {upload_count}")
+        if day_number >= 1:  # Start training from first upload
+            print(f"Starting synchronous training for user {batch.user_id}, day {day_number}")
 
             # Run training synchronously to ensure model is updated before response
             try:
@@ -703,15 +704,15 @@ async def upload_daily_sessions(
                     "metadata": training_result.get("model_metadata", {})
                 }
 
-                # Determine if we're in intervention period based on baseline existence or upload count
+                # Determine if we're in intervention period based on baseline existence or day number
                 if baseline_exists:
-                    response["message"] = f"Training completed with upload {upload_count} data (intervention period - baseline exists). Model updated and ready for download."
-                elif upload_count >= 3:
-                    response["message"] = f"Training completed with upload {upload_count} data (intervention period). Model updated and ready for download."
-                elif upload_count == 2:
-                    response["message"] = f"Training completed with upload {upload_count} data (baseline period just completed). Model updated and ready for download."
+                    response["message"] = f"Training completed with day {day_number} data (intervention period - baseline exists). Model updated and ready for download."
+                elif day_number >= 3:
+                    response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download."
+                elif day_number == 2:
+                    response["message"] = f"Training completed with day {day_number} data (baseline period just completed). Model updated and ready for download."
                 else:
-                    response["message"] = f"Training completed with upload {upload_count} data (baseline period). Model updated and ready for download."
+                    response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download."
 
             except Exception as e:
                 print(f"❌ Training failed for user {batch.user_id}: {e}")
@@ -723,10 +724,10 @@ async def upload_daily_sessions(
                     "training_steps": 0,
                     "checkpoint_saved": False
                 }
-                response["message"] = f"Session upload successful but model training failed for upload {upload_count}. Error: {str(e)}"
+                response["message"] = f"Session upload successful but model training failed for day {day_number}. Error: {str(e)}"
 
-        # Update user's current upload count as their 'current_day' for compatibility
-        DatabaseService.update_user_day(db, batch.user_id, upload_count)
+        # Update user's current day number
+        DatabaseService.update_user_day(db, batch.user_id, day_number)
 
         return response
     
@@ -958,6 +959,127 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
             for log in training_logs[:10]
         ]
     }
+
+@app.get("/api/v1/home/weekly-usage/{user_id}")
+async def get_weekly_target_app_usage(user_id: str, db: SQLSession = Depends(get_db)):
+    """
+    Get cumulative target app usage for the last 7 days.
+    Returns per-app breakdown and total usage for the home screen display.
+    """
+    if not DatabaseService.user_exists(db, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get user's apps to monitor (target apps)
+    user = DatabaseService.get_user(db, user_id)
+    apps_to_monitor = user.apps_to_monitor if user and user.apps_to_monitor else []
+    
+    if not apps_to_monitor:
+        return {
+            "user_id": user_id,
+            "period_days": 7,
+            "apps_to_monitor": [],
+            "daily_usage": [],
+            "per_app_usage": {},
+            "total_usage_seconds": 0,
+            "total_usage_formatted": "0s",
+            "message": "No target apps configured"
+        }
+    
+    # Calculate date range for last 7 days
+    today = datetime.now().date()
+    week_ago = today - timedelta(days=6)  # Include today = 7 days total
+    
+    # Get all sessions for this user
+    all_sessions = DatabaseService.get_all_sessions(db, user_id)
+    
+    # Filter sessions to last 7 days and target apps only
+    daily_usage = {}  # {date: {app: seconds}}
+    per_app_totals = {}  # {app: total_seconds}
+    
+    for session in all_sessions:
+        # Parse session date
+        try:
+            session_date = datetime.strptime(session.date, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        
+        # Check if within last 7 days
+        if session_date < week_ago or session_date > today:
+            continue
+        
+        # Check if target app
+        if session.app_name not in apps_to_monitor:
+            continue
+        
+        date_str = session.date
+        app_name = session.app_name
+        duration = session.duration_seconds or 0
+        
+        # Aggregate by date and app
+        if date_str not in daily_usage:
+            daily_usage[date_str] = {}
+        if app_name not in daily_usage[date_str]:
+            daily_usage[date_str][app_name] = 0
+        daily_usage[date_str][app_name] += duration
+        
+        # Aggregate per-app totals
+        if app_name not in per_app_totals:
+            per_app_totals[app_name] = 0
+        per_app_totals[app_name] += duration
+    
+    # Calculate grand total
+    total_seconds = sum(per_app_totals.values())
+    
+    # Format daily usage for response (sorted by date)
+    daily_usage_list = []
+    for date_str in sorted(daily_usage.keys()):
+        day_total = sum(daily_usage[date_str].values())
+        daily_usage_list.append({
+            "date": date_str,
+            "apps": daily_usage[date_str],
+            "total_seconds": day_total,
+            "total_formatted": format_duration(day_total)
+        })
+    
+    # Format per-app usage (sorted by usage descending)
+    per_app_formatted = {}
+    for app, seconds in sorted(per_app_totals.items(), key=lambda x: x[1], reverse=True):
+        per_app_formatted[app] = {
+            "total_seconds": seconds,
+            "total_formatted": format_duration(seconds)
+        }
+    
+    return {
+        "user_id": user_id,
+        "period_days": 7,
+        "date_range": {
+            "start": week_ago.isoformat(),
+            "end": today.isoformat()
+        },
+        "apps_to_monitor": apps_to_monitor,
+        "daily_usage": daily_usage_list,
+        "per_app_usage": per_app_formatted,
+        "total_usage_seconds": total_seconds,
+        "total_usage_formatted": format_duration(total_seconds)
+    }
+
+def format_duration(total_seconds: float) -> str:
+    """Format duration in seconds to human-readable format (e.g., '1h 23m', '45m', '30s')"""
+    total_seconds = int(total_seconds)
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    elif total_seconds < 3600:
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        if seconds > 0:
+            return f"{minutes}m {seconds}s"
+        return f"{minutes}m"
+    else:
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        if minutes > 0:
+            return f"{hours}h {minutes}m"
+        return f"{hours}h"
 
 @app.get("/api/v1/queries/{user_id}")
 async def get_queries(user_id: str, date: Optional[str] = None, limit: int = 100, offset: int = 0, db: SQLSession = Depends(get_db)):

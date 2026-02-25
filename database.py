@@ -258,6 +258,7 @@ class Query(Base):
     state = Column(String)  # State tuple as JSON string (e.g., "[0, 1, 1, 1]")
     action = Column(Integer)  # 0 or 1 (binary)
     compliance = Column(Integer)  # 0 or 1 (binary)
+    is_exploit = Column(Integer, default=0)  # 0 = random/explore, 1 = Q-table exploit
     
     # Timing
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
