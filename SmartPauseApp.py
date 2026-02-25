@@ -57,7 +57,7 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
         path_parts = request.url.path.split('/')
         for part in path_parts:
             # Check if this looks like a user_id (not empty and not a number)
-            if part and not part.isdigit() and part not in ['api', 'v1', 'users', 'register', 'sessions', 'upload', 'model', 'download', 'status', 'logs', 'feedback', 'analytics']:
+            if part and not part.isdigit() and part not in ['api', 'v1', 'users', 'register', 'sessions', 'upload', 'model', 'download', 'status', 'logs', 'feedback', 'analytics', 'home', 'weekly-usage', 'baseline', 'generate-sample', 'upload-custom', 'queries']:
                 user_id = part
                 break
         
@@ -964,7 +964,7 @@ async def get_analytics(user_id: str, db: SQLSession = Depends(get_db)):
 async def get_weekly_target_app_usage(user_id: str, db: SQLSession = Depends(get_db)):
     """
     Get cumulative target app usage for the last 7 days.
-    Returns per-app breakdown and total usage for the home screen display.
+    Returns all available data within the 7-day window (today to 6 days ago).
     """
     if not DatabaseService.user_exists(db, user_id):
         raise HTTPException(status_code=404, detail="User not found")
@@ -973,10 +973,19 @@ async def get_weekly_target_app_usage(user_id: str, db: SQLSession = Depends(get
     user = DatabaseService.get_user(db, user_id)
     apps_to_monitor = user.apps_to_monitor if user and user.apps_to_monitor else []
     
+    # Calculate date range for last 7 days
+    today = datetime.now().date()
+    max_week_ago = today - timedelta(days=6)  # 7 days total: today and 6 days before
+    
     if not apps_to_monitor:
         return {
             "user_id": user_id,
-            "period_days": 7,
+            "period_days": 0,
+            "max_period_days": 7,
+            "date_range": {
+                "start_date": max_week_ago.isoformat(),
+                "end_date": today.isoformat()
+            },
             "apps_to_monitor": [],
             "daily_usage": [],
             "per_app_usage": {},
@@ -984,10 +993,6 @@ async def get_weekly_target_app_usage(user_id: str, db: SQLSession = Depends(get
             "total_usage_formatted": "0s",
             "message": "No target apps configured"
         }
-    
-    # Calculate date range for last 7 days
-    today = datetime.now().date()
-    week_ago = today - timedelta(days=6)  # Include today = 7 days total
     
     # Get all sessions for this user
     all_sessions = DatabaseService.get_all_sessions(db, user_id)
@@ -1003,8 +1008,8 @@ async def get_weekly_target_app_usage(user_id: str, db: SQLSession = Depends(get
         except (ValueError, TypeError):
             continue
         
-        # Check if within last 7 days
-        if session_date < week_ago or session_date > today:
+        # Check if within last 7 days (maximum)
+        if session_date < max_week_ago or session_date > today:
             continue
         
         # Check if target app
@@ -1030,6 +1035,11 @@ async def get_weekly_target_app_usage(user_id: str, db: SQLSession = Depends(get
     # Calculate grand total
     total_seconds = sum(per_app_totals.values())
     
+    # Date range is always last 7 days from today
+    # period_days reflects how many days actually have data
+    available_dates = sorted(daily_usage.keys())
+    actual_days = len(available_dates)
+    
     # Format daily usage for response (sorted by date)
     daily_usage_list = []
     for date_str in sorted(daily_usage.keys()):
@@ -1051,10 +1061,11 @@ async def get_weekly_target_app_usage(user_id: str, db: SQLSession = Depends(get
     
     return {
         "user_id": user_id,
-        "period_days": 7,
+        "period_days": actual_days,
+        "max_period_days": 7,
         "date_range": {
-            "start": week_ago.isoformat(),
-            "end": today.isoformat()
+            "start_date": max_week_ago.isoformat(),
+            "end_date": today.isoformat()
         },
         "apps_to_monitor": apps_to_monitor,
         "daily_usage": daily_usage_list,

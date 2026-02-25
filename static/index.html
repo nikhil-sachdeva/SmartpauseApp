@@ -338,6 +338,7 @@
             <button class="tab-btn" onclick="switchTab('download')">📥 Download Model</button>
             <button class="tab-btn" onclick="switchTab('status')">📊 Model Status</button>
             <button class="tab-btn" onclick="switchTab('analytics')">📈 Analytics</button>
+            <button class="tab-btn" onclick="switchTab('weeklyusage')">📅 Weekly Usage</button>
             <button class="tab-btn" onclick="switchTab('sampledata')">🎲 Sample Data</button>
         </div>
 
@@ -512,6 +513,39 @@
                 </form>
 
                 <div id="analyticsResponse" class="response-box"></div>
+            </div>
+        </div>
+
+        <!-- Weekly Usage Tab -->
+        <div id="weeklyusage" class="tab-content">
+            <div class="card">
+                <h2>📅 Weekly Target App Usage</h2>
+                <p style="color: #666; margin: 10px 0 20px;">View cumulative target app usage over the last 7 days</p>
+
+                <form id="weeklyUsageForm" onsubmit="handleWeeklyUsage(event)">
+                    <div class="form-group">
+                        <label>User ID</label>
+                        <input type="text" id="weeklyUsageUserId" placeholder="e.g., user_123" required>
+                    </div>
+
+                    <div class="button-group">
+                        <button type="submit">Get Weekly Usage</button>
+                    </div>
+                </form>
+
+                <div id="weeklyUsageResponse" class="response-box"></div>
+                
+                <div id="weeklyUsageTable" style="display: none; margin-top: 20px;">
+                    <h3>Weekly Usage Summary</h3>
+                    <div id="weeklyTotalUsage" style="background-color: #e3f2fd; padding: 15px; border-radius: 8px; margin-bottom: 15px; font-size: 1.2em; font-weight: bold;"></div>
+                    <div id="weeklyDateRange" style="color: #666; margin-bottom: 15px;"></div>
+                    <div style="overflow-x: auto;">
+                        <table id="weeklyUsageTableContent" style="width: 100%; border-collapse: collapse; background-color: white; border: 1px solid #ddd;">
+                            <thead id="weeklyUsageTableHead"></thead>
+                            <tbody id="weeklyUsageTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1063,6 +1097,151 @@
             } catch (error) {
                 showResponse('analyticsResponse', `Error: ${error.message}`, 500);
             }
+        }
+
+        async function handleWeeklyUsage(event) {
+            event.preventDefault();
+
+            const userId = document.getElementById('weeklyUsageUserId').value;
+            const responseDiv = document.getElementById('weeklyUsageResponse');
+            const tableDiv = document.getElementById('weeklyUsageTable');
+            
+            // Hide table while loading
+            tableDiv.style.display = 'none';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/home/weekly-usage/${userId}`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                const data = await response.json();
+                showResponse('weeklyUsageResponse', data, response.status);
+                
+                if (response.ok && data.per_app_usage) {
+                    displayWeeklyUsageTable(data);
+                }
+            } catch (error) {
+                showResponse('weeklyUsageResponse', `Error: ${error.message}`, 500);
+            }
+        }
+
+        function displayWeeklyUsageTable(data) {
+            const tableDiv = document.getElementById('weeklyUsageTable');
+            const thead = document.getElementById('weeklyUsageTableHead');
+            const tbody = document.getElementById('weeklyUsageTableBody');
+            const totalDiv = document.getElementById('weeklyTotalUsage');
+            const dateRangeDiv = document.getElementById('weeklyDateRange');
+            
+            // Clear previous content
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+            
+            // Display total usage
+            totalDiv.innerHTML = `📊 Total Usage: ${data.total_usage_formatted}`;
+            
+            // Display date range
+            if (data.date_range) {
+                dateRangeDiv.innerHTML = `📅 Date Range: ${data.date_range.start_date} to ${data.date_range.end_date}`;
+            }
+            
+            // Get dates from daily_usage
+            const dates = data.daily_usage ? data.daily_usage.map(d => d.date).sort() : [];
+            
+            if (dates.length === 0 || !data.per_app_usage || Object.keys(data.per_app_usage).length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" style="padding: 20px; text-align: center; color: #666;">No usage data available for this period</td></tr>';
+                tableDiv.style.display = 'block';
+                return;
+            }
+            
+            // Build header row
+            let headerHtml = '<tr style="background-color: #667eea; color: white;">';
+            headerHtml += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd; font-weight: bold;">App</th>';
+            dates.forEach(date => {
+                const shortDate = formatShortDate(date);
+                headerHtml += `<th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">${shortDate}</th>`;
+            });
+            headerHtml += '<th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold; background-color: #4a5dc9;">Total</th>';
+            headerHtml += '</tr>';
+            thead.innerHTML = headerHtml;
+            
+            // Build body rows for each app (per_app_usage is an object, not array)
+            const appEntries = Object.entries(data.per_app_usage);
+            appEntries.forEach(([appName, appData], index) => {
+                const bgColor = index % 2 === 0 ? '#ffffff' : '#f9f9f9';
+                let rowHtml = `<tr style="background-color: ${bgColor};">`;
+                
+                // App name cell
+                const shortAppName = getShortAppName(appName);
+                rowHtml += `<td style="padding: 10px; border: 1px solid #ddd; font-weight: 500;">${shortAppName}</td>`;
+                
+                // Build a map of date -> seconds for this app from daily_usage
+                const dateMap = {};
+                if (data.daily_usage) {
+                    data.daily_usage.forEach(day => {
+                        if (day.apps && day.apps[appName]) {
+                            dateMap[day.date] = formatDurationJs(day.apps[appName]);
+                        }
+                    });
+                }
+                
+                // Add cells for each date
+                dates.forEach(date => {
+                    const duration = dateMap[date] || '-';
+                    rowHtml += `<td style="padding: 10px; text-align: center; border: 1px solid #ddd;">${duration}</td>`;
+                });
+                
+                // Total cell
+                const totalFormatted = appData.total_formatted || formatDurationJs(appData.total_seconds);
+                rowHtml += `<td style="padding: 10px; text-align: center; border: 1px solid #ddd; font-weight: bold; background-color: #e8eaf6;">${totalFormatted}</td>`;
+                rowHtml += '</tr>';
+                
+                tbody.innerHTML += rowHtml;
+            });
+            
+            // Add totals row
+            let totalsRowHtml = '<tr style="background-color: #e3f2fd; font-weight: bold;">';
+            totalsRowHtml += '<td style="padding: 10px; border: 1px solid #ddd;">Daily Total</td>';
+            
+            // Build date -> total map from daily_usage
+            const dailyTotals = {};
+            if (data.daily_usage) {
+                data.daily_usage.forEach(d => {
+                    dailyTotals[d.date] = d.total_formatted || formatDurationJs(d.total_seconds);
+                });
+            }
+            
+            dates.forEach(date => {
+                const total = dailyTotals[date] || '-';
+                totalsRowHtml += `<td style="padding: 10px; text-align: center; border: 1px solid #ddd;">${total}</td>`;
+            });
+            
+            totalsRowHtml += `<td style="padding: 10px; text-align: center; border: 1px solid #ddd; background-color: #bbdefb;">${data.total_usage_formatted}</td>`;
+            totalsRowHtml += '</tr>';
+            tbody.innerHTML += totalsRowHtml;
+            
+            tableDiv.style.display = 'block';
+        }
+
+        function formatShortDate(dateStr) {
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+
+        function getShortAppName(appName) {
+            if (!appName) return 'Unknown';
+            // Remove common suffixes
+            return appName.replace(/ - .+$/, '').substring(0, 15);
+        }
+
+        function formatDurationJs(seconds) {
+            if (!seconds || seconds === 0) return '-';
+            const hours = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            if (hours > 0) {
+                return `${hours}h ${mins}m`;
+            }
+            return `${mins}m`;
         }
 
         // Set today's date in the upload form
