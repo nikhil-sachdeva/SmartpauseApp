@@ -193,6 +193,7 @@ class UserRegistration(BaseModel):
     user_id: str
     device_info: Optional[Dict] = None
     apps_to_monitor: Optional[List[str]] = None  # Apps user wants to monitor (empty list = all apps)
+    is_test_mode: bool = False  # Random allocation for A/B testing
 
 class ModelDownload(BaseModel):
     user_id: str
@@ -545,6 +546,7 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
     print(f"  Apps to Monitor Type: {type(registration.apps_to_monitor)}")
     print(f"  Apps is None: {registration.apps_to_monitor is None}")
     print(f"  Apps is empty: {registration.apps_to_monitor == [] if registration.apps_to_monitor is not None else 'N/A'}")
+    print(f"  Test Mode: {registration.is_test_mode}")
     
     if DatabaseService.user_exists(db, registration.user_id):
         raise HTTPException(status_code=400, detail="User already exists")
@@ -554,7 +556,7 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
     
     print(f"  Final apps_to_monitor to save: {apps_to_monitor}")
     
-    user = DatabaseService.create_user(db, registration.user_id, registration.device_info, apps_to_monitor)
+    user = DatabaseService.create_user(db, registration.user_id, registration.device_info, apps_to_monitor, registration.is_test_mode)
     
     # Create basic Q-table model for new user (proper RL initialization with zeros)
     try:
@@ -579,7 +581,8 @@ async def register_user(registration: UserRegistration, db: SQLSession = Depends
         "status": "success",
         "user_id": registration.user_id,
         "apps_to_monitor": apps_to_monitor,
-        "message": "User registered. Upload data to start model training (interventions begin immediately if you have existing baseline stats)."
+        "is_test_mode": registration.is_test_mode,
+        "message": f"User registered in {'TEST' if registration.is_test_mode else 'PRODUCTION'} mode. Upload data to start model training (interventions begin immediately if you have existing baseline stats)."
     }
 
 @app.post("/api/v1/sessions/upload")
@@ -623,10 +626,16 @@ async def upload_daily_sessions(
         # Check if baseline stats already exist for this user
         existing_baseline_stats = DatabaseService.get_baseline_stats(db, batch.user_id)
         baseline_exists = existing_baseline_stats is not None
+        
+        # Get user info for test mode
+        user = DatabaseService.get_user(db, batch.user_id)
+        is_test_mode = user.is_test_mode if user else False
 
         # Calculate day number for the user (number of session uploads)
         day_number = DatabaseService.get_upload_count(db, batch.user_id)
         print(f"✅ Day number for user {batch.user_id}: {day_number}")
+        print(f"✅ Baseline stats exist: {baseline_exists}")
+        print(f"✅ User test mode: {is_test_mode}")
 
         # Save sessions to database
         DatabaseService.save_sessions(db, batch.user_id, batch.date, batch.sessions)
@@ -648,15 +657,17 @@ async def upload_daily_sessions(
             "queries_count": queries_count,
             "day_number": day_number,
             "date": batch.date,
-            "baseline_exists": baseline_exists
+            "baseline_exists": baseline_exists,
+            "is_test_mode": is_test_mode
         }
         # Default baseline_stats to None unless we compute or fetch them
         response["baseline_stats"] = None
 
         # Handle baseline stats logic
+        mode_suffix = f" [{('TEST' if is_test_mode else 'PRODUCTION')} mode]"
         if baseline_exists:
             # Skip baseline period - user already has baseline stats
-            response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with day {day_number} data."
+            response["message"] = f"Baseline stats exist - starting intervention period immediately. Training with day {day_number} data.{mode_suffix}"
             response["baseline_stats"] = {
                 "median_target_app_usage_seconds": existing_baseline_stats.median_target_app_usage_seconds,
                 "median_session_usage_seconds": existing_baseline_stats.median_session_usage_seconds,
@@ -674,10 +685,10 @@ async def upload_daily_sessions(
             stats = calculate_baseline_stats(baseline_sessions, user_apps)
             DatabaseService.save_baseline_stats(db, batch.user_id, stats)
             response["baseline_stats"] = stats
-            response["message"] = "Baseline period completed (2 uploads). Model training continues daily."
+            response["message"] = f"Baseline period completed (2 uploads). Model training continues daily.{mode_suffix}"
             print(f"Baseline stats: {stats}")
         else:
-            response["message"] = f"Day {day_number} recorded. Baseline stats will be calculated after the second upload."
+            response["message"] = f"Day {day_number} recorded. Baseline stats will be calculated after the second upload.{mode_suffix}"
 
         # Train model daily regardless of baseline/intervention period
         training_result = None
@@ -705,14 +716,15 @@ async def upload_daily_sessions(
                 }
 
                 # Determine if we're in intervention period based on baseline existence or day number
+                mode_suffix = f" [{('TEST' if is_test_mode else 'PRODUCTION')} mode]"
                 if baseline_exists:
-                    response["message"] = f"Training completed with day {day_number} data (intervention period - baseline exists). Model updated and ready for download."
+                    response["message"] = f"Training completed with day {day_number} data (intervention period - baseline exists). Model updated and ready for download.{mode_suffix}"
                 elif day_number >= 3:
-                    response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download."
+                    response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download.{mode_suffix}"
                 elif day_number == 2:
-                    response["message"] = f"Training completed with day {day_number} data (baseline period just completed). Model updated and ready for download."
+                    response["message"] = f"Training completed with day {day_number} data (baseline period just completed). Model updated and ready for download.{mode_suffix}"
                 else:
-                    response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download."
+                    response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download.{mode_suffix}"
 
             except Exception as e:
                 print(f"❌ Training failed for user {batch.user_id}: {e}")

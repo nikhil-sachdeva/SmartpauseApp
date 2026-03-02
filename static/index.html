@@ -380,6 +380,15 @@
                         <small style="color: #999; margin-top: 5px; display: block;">Apps should be JSON array with objects containing package_name and app_name fields</small>
                     </div>
 
+                    <div class="form-group">
+                        <label>Test Mode (A/B Testing)</label>
+                        <div style="display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; background-color: #f9f9f9;">
+                            <input type="checkbox" id="isTestMode" disabled>
+                            <span id="testModeStatus" style="color: #666;">🎲 Will be randomly assigned (50/50 split)</span>
+                        </div>
+                        <small style="color: #999; margin-top: 5px; display: block;">Random allocation between TEST and PRODUCTION modes for A/B testing</small>
+                    </div>
+
                     <div class="button-group">
                         <button type="submit">Register User</button>
                         <button type="button" class="btn-secondary" onclick="document.getElementById('registerForm').reset()">Clear</button>
@@ -966,13 +975,21 @@
                 }
             }
 
+            // Random test mode allocation (50/50 split)
+            const isTestMode = Math.random() < 0.5;
+            document.getElementById('isTestMode').checked = isTestMode;
+            document.getElementById('testModeStatus').textContent = 
+                `🎯 Randomly assigned: ${isTestMode ? 'TEST' : 'PRODUCTION'} mode`;
+            document.getElementById('testModeStatus').style.color = isTestMode ? '#e74c3c' : '#27ae60';
+
             const payload = {
                 user_id: userId,
                 device_info: {
                     brand: brand || undefined,
                     model: model || undefined,
                     os_version: osVer || undefined
-                }
+                },
+                is_test_mode: isTestMode
             };
 
             // Remove undefined values

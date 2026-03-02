@@ -69,6 +69,7 @@ class User(Base):
     current_day = Column(Integer, default=0)
     baseline_completed = Column(Boolean, default=False)
     start_date = Column(DateTime, nullable=True)
+    is_test_mode = Column(Boolean, default=False)  # Random allocation for A/B testing
     
     # Relationships
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")

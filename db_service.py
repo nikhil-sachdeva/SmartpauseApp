@@ -100,13 +100,14 @@ class DatabaseService:
     
     """Service layer for all database operations"""
     @staticmethod
-    def create_user(db: Session, user_id: str, device_info: dict = None, apps_to_monitor: list = None):
+    def create_user(db: Session, user_id: str, device_info: dict = None, apps_to_monitor: list = None, is_test_mode: bool = False):
         """Create a new user"""
         user = User(
             id=user_id,
             device_info=device_info,
             apps_to_monitor=apps_to_monitor,  # Store list of apps to monitor
             current_day=0,
+            is_test_mode=is_test_mode,
             created_at=datetime.utcnow()
         )
         db.add(user)
