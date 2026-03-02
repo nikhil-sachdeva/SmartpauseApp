@@ -286,3 +286,72 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def create_tables():
+    """Create all database tables with current schema"""
+    try:
+        print("🔄 Creating database tables...")
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database tables created successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Error creating tables: {e}")
+        return False
+
+def run_migrations():
+    """Run any pending database migrations"""
+    try:
+        from sqlalchemy import text
+        print("🔄 Running database migrations...")
+        
+        # Check if is_test_mode column exists in users table
+        with engine.connect() as conn:
+            if "sqlite" in str(engine.url):
+                result = conn.execute(text("PRAGMA table_info(users)"))
+                columns = [row[1] for row in result.fetchall()]
+                has_test_mode = 'is_test_mode' in columns
+            else:
+                result = conn.execute(text("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'users' AND column_name = 'is_test_mode'
+                """))
+                has_test_mode = result.fetchone() is not None
+        
+        # Add column if it doesn't exist
+        if not has_test_mode:
+            print("📝 Adding is_test_mode column to users table...")
+            
+            # Use autocommit mode for DDL statements
+            with engine.connect().execution_options(autocommit=True) as conn:
+                if "sqlite" in str(engine.url):
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_test_mode BOOLEAN DEFAULT FALSE"))
+                else:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_test_mode BOOLEAN DEFAULT FALSE NOT NULL"))
+            
+            print("✅ is_test_mode column added successfully")
+            print("   📝 All existing users automatically set to production mode (default: FALSE)")
+        else:
+            print("✅ is_test_mode column already exists")
+        
+        print("✅ Database migrations completed")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error running migrations: {e}")
+        return False
+
+def initialize_database():
+    """Initialize database with tables and migrations"""
+    print("🚀 Initializing database...")
+    
+    # Create tables first
+    if not create_tables():
+        return False
+    
+    # Run migrations
+    if not run_migrations():
+        return False
+    
+    print("🎉 Database initialization completed successfully!")
+    return True

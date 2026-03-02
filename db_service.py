@@ -92,11 +92,7 @@ def ensure_complete_qtable(qtable: dict) -> dict:
 
 
 class DatabaseService:
-    @staticmethod
-    def get_upload_count(db: Session, user_id: str) -> int:
-        """Return the number of unique session upload dates for a user (i.e., number of uploads)."""
-        return db.query(SessionModel.date).filter(SessionModel.user_id == user_id).distinct().count()
-
+    # Removed get_upload_count - use user.current_day as source of truth instead
     
     """Service layer for all database operations"""
     @staticmethod

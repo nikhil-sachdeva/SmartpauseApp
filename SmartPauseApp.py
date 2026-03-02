@@ -20,7 +20,7 @@ import base64
 import os
 import ast
 
-from database import get_db, init_db
+from database import get_db, initialize_database
 from db_service import DatabaseService
 from sqlalchemy.orm import Session as SQLSession
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -28,6 +28,19 @@ from starlette.requests import Request
 import io
 
 app = FastAPI(title="SmartQuit API", version="2.0.0 - Database Enabled")
+
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database with tables and migrations on server startup"""
+    print("🚀 Initializing database on server startup...")
+    try:
+        if initialize_database():
+            print("✅ Database initialization completed")
+        else:
+            print("❌ Database initialization failed")
+    except Exception as e:
+        print(f"❌ Database initialization error: {e}")
 
 # CORS middleware for Android app
 app.add_middleware(
@@ -592,11 +605,11 @@ async def upload_daily_sessions(
 ):
     """
     Upload daily session data from device.
-    Day number is automatically calculated from the date.
+    Day number is based on user's current_day field in database (incremented on each upload).
     
     Baseline Logic:
     - If user has existing baseline stats: Start interventions immediately  
-    - If no baseline stats: Days 0-1 = baseline (collect stats), Days 2+ = intervention
+    - If no baseline stats: Day 1-2 = baseline (collect stats), Day 3+ = intervention
     
     Training: Model trains daily from day 1 regardless of baseline status
     Device should call this every day at 3 AM with yesterday's sessions
@@ -627,13 +640,14 @@ async def upload_daily_sessions(
         existing_baseline_stats = DatabaseService.get_baseline_stats(db, batch.user_id)
         baseline_exists = existing_baseline_stats is not None
         
-        # Get user info for test mode
+        # Get user info for test mode and current day
         user = DatabaseService.get_user(db, batch.user_id)
         is_test_mode = user.is_test_mode if user else False
 
-        # Calculate day number for the user (number of session uploads)
-        day_number = DatabaseService.get_upload_count(db, batch.user_id)
-        print(f"✅ Day number for user {batch.user_id}: {day_number}")
+        # Use user's current_day as source of truth, increment for this upload
+        day_number = user.current_day + 1
+        
+        print(f"✅ User {batch.user_id} day progression: {user.current_day} → {day_number}")
         print(f"✅ Baseline stats exist: {baseline_exists}")
         print(f"✅ User test mode: {is_test_mode}")
 
@@ -674,9 +688,9 @@ async def upload_daily_sessions(
                 "query_interval_seconds": existing_baseline_stats.query_interval_seconds
             }
         elif day_number == 2:
-            # Calculate baseline stats after second upload
+            # Calculate baseline stats after second upload (day 1 → day 2)
             baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
-            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (2 uploads)")
+            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (days 1-2)")
 
             # Get user's apps_to_monitor for baseline calculation
             user = DatabaseService.get_user(db, batch.user_id)
@@ -685,14 +699,14 @@ async def upload_daily_sessions(
             stats = calculate_baseline_stats(baseline_sessions, user_apps)
             DatabaseService.save_baseline_stats(db, batch.user_id, stats)
             response["baseline_stats"] = stats
-            response["message"] = f"Baseline period completed (2 uploads). Model training continues daily.{mode_suffix}"
+            response["message"] = f"Baseline period completed (days 1-2). Model training continues daily.{mode_suffix}"
             print(f"Baseline stats: {stats}")
         else:
-            response["message"] = f"Day {day_number} recorded. Baseline stats will be calculated after the second upload.{mode_suffix}"
+            response["message"] = f"Day {day_number} recorded. Baseline stats will be calculated after day 2.{mode_suffix}"
 
         # Train model daily regardless of baseline/intervention period
         training_result = None
-        if day_number >= 1:  # Start training from first upload
+        if day_number >= 1:  # Start training from day 1 (first upload)
             print(f"Starting synchronous training for user {batch.user_id}, day {day_number}")
 
             # Run training synchronously to ensure model is updated before response
@@ -700,31 +714,43 @@ async def upload_daily_sessions(
                 training_result = await train_model_daily(batch.user_id, batch.date, batch.queries if batch.queries else [], db)
                 print(f"✅ Training completed for user {batch.user_id}: {training_result}")
 
-                # Add training results to response for confirmation
-                response["model_training"] = {
-                    "status": "completed",
-                    "learned_transitions": training_result.get("learned_transitions", 0),
-                    "q_table_size": training_result.get("q_table_size", 0),
-                    "training_steps": training_result.get("training_steps", 0),
-                    "checkpoint_saved": training_result.get("checkpoint_saved", False)
-                }
-
-                # Include updated Q-table and metadata in response
-                response["updated_model"] = {
-                    "q_table": training_result.get("q_table", {}),
-                    "metadata": training_result.get("model_metadata", {})
-                }
-
-                # Determine if we're in intervention period based on baseline existence or day number
-                mode_suffix = f" [{('TEST' if is_test_mode else 'PRODUCTION')} mode]"
-                if baseline_exists:
-                    response["message"] = f"Training completed with day {day_number} data (intervention period - baseline exists). Model updated and ready for download.{mode_suffix}"
-                elif day_number >= 3:
-                    response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download.{mode_suffix}"
-                elif day_number == 2:
-                    response["message"] = f"Training completed with day {day_number} data (baseline period just completed). Model updated and ready for download.{mode_suffix}"
+                if training_result.get("status") == "skipped":
+                    # Training was skipped due to no queries
+                    response["model_training"] = {
+                        "status": "skipped",
+                        "reason": training_result.get("reason", "no_queries_to_learn_from"),
+                        "learned_transitions": 0,
+                        "q_table_size": 0,
+                        "training_steps": 0,
+                        "checkpoint_saved": False
+                    }
+                    response["message"] = f"Day {day_number} recorded. No queries to learn from - training skipped.{mode_suffix}"
                 else:
-                    response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download.{mode_suffix}"
+                    # Normal training completed
+                    response["model_training"] = {
+                        "status": "completed",
+                        "learned_transitions": training_result.get("learned_transitions", 0),
+                        "q_table_size": training_result.get("q_table_size", 0),
+                        "training_steps": training_result.get("training_steps", 0),
+                        "checkpoint_saved": training_result.get("checkpoint_saved", False)
+                    }
+
+                    # Include updated Q-table and metadata in response only if training actually happened
+                    response["updated_model"] = {
+                        "q_table": training_result.get("q_table", {}),
+                        "metadata": training_result.get("model_metadata", {})
+                    }
+
+                    # Determine if we're in intervention period based on baseline existence or day number  
+                    mode_suffix = f" [{('TEST' if is_test_mode else 'PRODUCTION')} mode]"
+                    if baseline_exists:
+                        response["message"] = f"Training completed with day {day_number} data (intervention period - baseline exists). Model updated and ready for download.{mode_suffix}"
+                    elif day_number >= 3:
+                        response["message"] = f"Training completed with day {day_number} data (intervention period). Model updated and ready for download.{mode_suffix}"
+                    elif day_number == 2:
+                        response["message"] = f"Training completed with day {day_number} data (baseline period completed). Model updated and ready for download.{mode_suffix}"
+                    else:
+                        response["message"] = f"Training completed with day {day_number} data (baseline period). Model updated and ready for download.{mode_suffix}"
 
             except Exception as e:
                 print(f"❌ Training failed for user {batch.user_id}: {e}")
@@ -1490,58 +1516,20 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
     
     # Use queries passed from upload endpoint
     if not queries:
-        print(f"No queries for user {user_id} on date {date}")
+        print(f"No queries for user {user_id} on date {date} - skipping training (no learning data)")
         
-        # Even with no queries, load latest model and track training attempt
-        checkpoint = DatabaseService.get_latest_model(db, user_id)
-        agent = EdgeQLearningAgent.load_from_checkpoint(checkpoint)
-        
-        # Increment training steps to track attempt even with no data
-        agent.training_steps += 1
-        
-        try:
-            DatabaseService.save_model_checkpoint(
-                db, user_id, agent.training_steps, agent.epsilon,
-                agent.alpha, agent.gamma, {json.dumps(list(k)): v for k, v in agent.q_table.items()}
-            )
+        # Skip training entirely when there are no queries to learn from
+        # This is especially important for sample data uploads where sessions exist but no real queries
+        return {
+            "status": "skipped",
+            "reason": "no_queries_to_learn_from",
+            "learned_transitions": 0,
+            "q_table_size": 0,
+            "training_steps": 0,
+            "checkpoint_saved": False
+        }
             print(f"✅ Model checkpoint updated for user {user_id} - no queries but training attempt tracked")
-            q_table_data = {json.dumps(list(k)): v for k, v in agent.q_table.items()}
-            return {
-                "learned_transitions": 0,
-                "q_table_size": len(agent.q_table),
-                "training_steps": agent.training_steps,
-                "checkpoint_saved": True,
-                "message": "No queries found, but training attempt tracked",
-                "q_table": q_table_data,
-                "model_metadata": {
-                    "epsilon": agent.epsilon,
-                    "alpha": agent.alpha,
-                    "gamma": agent.gamma,
-                    "training_steps": agent.training_steps,
-                    "q_table_states": len(agent.q_table),
-                    "last_updated": datetime.now().isoformat()
-                }
-            }
-        except Exception as e:
-            print(f"❌ Error saving checkpoint for no-query case: {e}")
-            q_table_data = {json.dumps(list(k)): v for k, v in agent.q_table.items()} if agent.q_table else {}
-            return {
-                "learned_transitions": 0,
-                "q_table_size": len(agent.q_table) if agent.q_table else 0,
-                "training_steps": agent.training_steps,
-                "checkpoint_saved": False,
-                "message": "No queries found, checkpoint save failed",
-                "q_table": q_table_data,
-                "model_metadata": {
-                    "epsilon": agent.epsilon if agent else 1.0,
-                    "alpha": agent.alpha if agent else 0.1,
-                    "gamma": agent.gamma if agent else 0.95,
-                    "training_steps": agent.training_steps if agent else 0,
-                    "q_table_states": len(agent.q_table) if agent and agent.q_table else 0,
-                    "last_updated": datetime.now().isoformat()
-                }
-            }
-    
+        
     print(f"Training model for user {user_id} with {len(queries)} queries from {date}")
     
     # Load agent from latest checkpoint using centralized loading method
@@ -1775,7 +1763,9 @@ async def root():
         "update_schedule": "Daily at 3 AM per user - trains from day 1",
         "training_policy": "Trains Q-learning model daily regardless of baseline/intervention period",
         "persistence": "All data points stored in PostgreSQL",
-        "baseline_period": "2 days (days 0-1)"
+        "baseline_period": "2 days (days 1-2)",
+        "ab_testing": "Random test/production mode allocation (50/50 split)",
+        "features": ["baseline_optimization", "random_mode_allocation", "daily_training"]
     }
 
 # ============================================================================
