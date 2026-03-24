@@ -607,9 +607,9 @@ async def upload_daily_sessions(
     Upload daily session data from device.
     Day number is based on user's current_day field in database (incremented on each upload).
     
-    Baseline Logic:
+    Baseline Logic (1-indexed, first upload = Day 1):
     - If user has existing baseline stats: Start interventions immediately  
-    - If no baseline stats: Day 1-2 = baseline (collect stats), Day 3+ = intervention
+    - If no baseline stats: Day 1 = collect data, Day 2 = calculate baseline, Day 3+ = intervention
     
     Training: Model trains daily from day 1 regardless of baseline status
     Device should call this every day at 3 AM with yesterday's sessions
@@ -688,9 +688,9 @@ async def upload_daily_sessions(
                 "query_interval_seconds": existing_baseline_stats.query_interval_seconds
             }
         elif day_number == 2:
-            # Calculate baseline stats after second upload (day 1 → day 2)
+            # Calculate baseline stats on second upload (day 2)
             baseline_sessions = DatabaseService.get_baseline_sessions(db, batch.user_id)
-            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (days 1-2)")
+            print(f"Calculating baseline stats from {len(baseline_sessions)} sessions (1st and 2nd upload)")
 
             # Get user's apps_to_monitor for baseline calculation
             user = DatabaseService.get_user(db, batch.user_id)
@@ -699,10 +699,10 @@ async def upload_daily_sessions(
             stats = calculate_baseline_stats(baseline_sessions, user_apps)
             DatabaseService.save_baseline_stats(db, batch.user_id, stats)
             response["baseline_stats"] = stats
-            response["message"] = f"Baseline period completed (days 1-2). Model training continues daily.{mode_suffix}"
+            response["message"] = f"Baseline period completed (2nd upload). Model training continues daily.{mode_suffix}"
             print(f"Baseline stats: {stats}")
         else:
-            response["message"] = f"Day {day_number} recorded. Baseline stats will be calculated after day 2.{mode_suffix}"
+            response["message"] = f"Day {day_number} recorded. Baseline stats will be calculated on day 2 (2nd upload).{mode_suffix}"
 
         # Train model daily regardless of baseline/intervention period
         training_result = None
@@ -1763,7 +1763,7 @@ async def root():
         "update_schedule": "Daily at 3 AM per user - trains from day 1",
         "training_policy": "Trains Q-learning model daily regardless of baseline/intervention period",
         "persistence": "All data points stored in PostgreSQL",
-        "baseline_period": "2 days (days 1-2)",
+        "baseline_period": "2 uploads (Day 1 collects data, Day 2 calculates baseline)",
         "ab_testing": "Random test/production mode allocation (50/50 split)",
         "features": ["baseline_optimization", "random_mode_allocation", "daily_training"]
     }
