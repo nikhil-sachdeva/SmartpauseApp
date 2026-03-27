@@ -1528,7 +1528,6 @@ async def train_model_daily(user_id: str, date: str, queries: List[Query], db: S
             "training_steps": 0,
             "checkpoint_saved": False
         }
-            print(f"✅ Model checkpoint updated for user {user_id} - no queries but training attempt tracked")
         
     print(f"Training model for user {user_id} with {len(queries)} queries from {date}")
     
