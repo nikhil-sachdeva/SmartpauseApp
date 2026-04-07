@@ -323,8 +323,8 @@ def run_migrations():
         if not has_test_mode:
             print("📝 Adding is_test_mode column to users table...")
             
-            # Use autocommit mode for DDL statements
-            with engine.connect().execution_options(autocommit=True) as conn:
+            # Execute DDL with explicit commit for SQLAlchemy 2.0 compatibility
+            with engine.begin() as conn:
                 if "sqlite" in str(engine.url):
                     conn.execute(text("ALTER TABLE users ADD COLUMN is_test_mode BOOLEAN DEFAULT FALSE"))
                 else:
@@ -353,7 +353,8 @@ def run_migrations():
         if not has_last_upload_at:
             print("📝 Adding last_upload_at column to users table for rate limiting...")
             
-            with engine.connect().execution_options(autocommit=True) as conn:
+            # Execute DDL with explicit commit for SQLAlchemy 2.0 compatibility
+            with engine.begin() as conn:
                 if "sqlite" in str(engine.url):
                     conn.execute(text("ALTER TABLE users ADD COLUMN last_upload_at TIMESTAMP"))
                 else:
