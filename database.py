@@ -70,6 +70,7 @@ class User(Base):
     baseline_completed = Column(Boolean, default=False)
     start_date = Column(DateTime, nullable=True)
     is_test_mode = Column(Boolean, default=False)  # Random allocation for A/B testing
+    last_upload_at = Column(DateTime, nullable=True)  # Rate limiting: last session/query upload time
     
     # Relationships
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
@@ -333,6 +334,34 @@ def run_migrations():
             print("   📝 All existing users automatically set to production mode (default: FALSE)")
         else:
             print("✅ is_test_mode column already exists")
+        
+        # Check if last_upload_at column exists in users table
+        with engine.connect() as conn:
+            if "sqlite" in str(engine.url):
+                result = conn.execute(text("PRAGMA table_info(users)"))
+                columns = [row[1] for row in result.fetchall()]
+                has_last_upload_at = 'last_upload_at' in columns
+            else:
+                result = conn.execute(text("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'users' AND column_name = 'last_upload_at'
+                """))
+                has_last_upload_at = result.fetchone() is not None
+        
+        # Add last_upload_at column if it doesn't exist
+        if not has_last_upload_at:
+            print("📝 Adding last_upload_at column to users table for rate limiting...")
+            
+            with engine.connect().execution_options(autocommit=True) as conn:
+                if "sqlite" in str(engine.url):
+                    conn.execute(text("ALTER TABLE users ADD COLUMN last_upload_at TIMESTAMP"))
+                else:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN last_upload_at TIMESTAMP"))
+            
+            print("✅ last_upload_at column added successfully")
+        else:
+            print("✅ last_upload_at column already exists")
         
         print("✅ Database migrations completed")
         return True

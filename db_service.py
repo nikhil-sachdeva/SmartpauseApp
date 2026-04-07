@@ -122,6 +122,50 @@ class DatabaseService:
         return db.query(User).filter(User.id == user_id).first() is not None
     
     @staticmethod
+    def check_upload_rate_limit(db: Session, user_id: str, min_gap_hours: int = 1) -> dict:
+        """
+        Check if enough time has passed since last upload (rate limiting).
+        Returns dict with 'allowed' bool and details.
+        """
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return {"allowed": False, "reason": "User not found"}
+        
+        # If no previous upload, allow
+        if user.last_upload_at is None:
+            return {"allowed": True, "last_upload_at": None, "seconds_since_last": None}
+        
+        now = datetime.utcnow()
+        time_since_last = now - user.last_upload_at
+        seconds_since_last = time_since_last.total_seconds()
+        required_seconds = min_gap_hours * 3600
+        
+        if seconds_since_last >= required_seconds:
+            return {
+                "allowed": True, 
+                "last_upload_at": user.last_upload_at.isoformat(),
+                "seconds_since_last": seconds_since_last
+            }
+        else:
+            wait_seconds = required_seconds - seconds_since_last
+            return {
+                "allowed": False,
+                "reason": f"Rate limited: must wait {int(wait_seconds)} more seconds (1 hour between uploads)",
+                "last_upload_at": user.last_upload_at.isoformat(),
+                "seconds_since_last": seconds_since_last,
+                "wait_seconds": wait_seconds
+            }
+    
+    @staticmethod
+    def update_last_upload_at(db: Session, user_id: str):
+        """Update the last_upload_at timestamp for rate limiting"""
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.last_upload_at = datetime.utcnow()
+            db.commit()
+            print(f"✅ Updated last_upload_at for user {user_id}")
+    
+    @staticmethod
     def save_sessions(db: Session, user_id: str, date: str, sessions: list):
         """Save daily sessions to database"""
         # Validate date format

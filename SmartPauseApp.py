@@ -607,6 +607,8 @@ async def upload_daily_sessions(
     Upload daily session data from device.
     Day number is based on user's current_day field in database (incremented on each upload).
     
+    Rate Limiting: Only one upload per user per hour to prevent duplicate back-to-back uploads.
+    
     Baseline Logic (1-indexed, first upload = Day 1):
     - If user has existing baseline stats: Start interventions immediately  
     - If no baseline stats: Day 1 = collect data, Day 2 = calculate baseline, Day 3+ = intervention
@@ -616,6 +618,20 @@ async def upload_daily_sessions(
     """
     if not DatabaseService.user_exists(db, batch.user_id):
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check rate limiting - enforce 1-hour gap between uploads for same user
+    rate_limit_check = DatabaseService.check_upload_rate_limit(db, batch.user_id, min_gap_hours=1)
+    if not rate_limit_check["allowed"]:
+        print(f"⚠️ Rate limited: User {batch.user_id} attempted upload too soon. {rate_limit_check.get('reason', 'Rate limited')}")
+        raise HTTPException(
+            status_code=429,  # Too Many Requests
+            detail={
+                "error": "rate_limited",
+                "message": rate_limit_check.get("reason", "Rate limited: please wait before uploading again"),
+                "last_upload_at": rate_limit_check.get("last_upload_at"),
+                "wait_seconds": int(rate_limit_check.get("wait_seconds", 3600))
+            }
+        )
     
     try:
         # Validate date format
@@ -664,6 +680,9 @@ async def upload_daily_sessions(
             except Exception as e:
                 print(f"⚠️ Failed to save queries: {e}")
                 # Don't fail the entire upload if queries fail
+
+        # Update last_upload_at for rate limiting (after successful save)
+        DatabaseService.update_last_upload_at(db, batch.user_id)
 
         response = {
             "status": "received",
